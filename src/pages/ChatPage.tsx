@@ -1379,6 +1379,8 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat }:
   const isEmoji = message.localType === 47
   const isImage = message.localType === 3
   const isVoice = message.localType === 34
+  const isCard = message.localType === 21474836529
+  const isVideoLink = message.localType === 17179869233
   const isSent = message.isSend === 1
   const [senderAvatarUrl, setSenderAvatarUrl] = useState<string | undefined>(undefined)
   const [senderName, setSenderName] = useState<string | undefined>(undefined)
@@ -1901,8 +1903,23 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat }:
         </div>
       )
     }
+
+    if (isCard) {
+      console.log(message);
+      return (
+        <div className="bubble-content">
+          <div className="card-message">
+            {renderTextWithEmoji(message.parsedContent)}
+          </div>
+        </div>
+      )
+    }
+
     // 普通消息
-    return <div className="bubble-content">{renderTextWithEmoji(message.parsedContent)}</div>
+    return <div className="bubble-content">
+        {renderTextWithEmoji(message.parsedContent)}
+        <div style={{ display: message.localType !== 1 ? 'block' : 'none' }} className="local-type">{message.localType}</div>
+      </div>
   }
 
   return (

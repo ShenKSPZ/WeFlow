@@ -287,13 +287,24 @@ export interface ElectronAPI {
       success: boolean
       error?: string
     }>
+    standaloneSessions: (sessionIds: string[], outputDir: string, options: StandaloneExportOptions) => Promise<{
+      success: boolean
+      successCount: number
+      failCount: number
+      error?: string
+    }>
   }
 }
 
 export interface ExportOptions {
-  format: 'chatlab' | 'chatlab-jsonl' | 'json' | 'html' | 'txt' | 'excel' | 'sql'
+  format: 'chatlab' | 'chatlab-jsonl' | 'json' | 'html' | 'txt' | 'excel' | 'sql' | 'standalone'
   dateRange?: { start: number; end: number } | null
   exportMedia?: boolean
+  exportAvatars?: boolean
+}
+
+export interface StandaloneExportOptions {
+  dateRange?: { start: number; end: number } | null
   exportAvatars?: boolean
 }
 

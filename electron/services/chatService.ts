@@ -559,6 +559,53 @@ class ChatService {
     }
   }
 
+  /**
+   * 获取完整消息列表（用于导出等场景）
+   */
+  async getAllMessages(
+    sessionId: string,
+    dateRange?: { start: number; end: number }
+  ): Promise<{ success: boolean; messages?: Message[]; error?: string }> {
+    try {
+      const connectResult = await this.ensureConnected()
+      if (!connectResult.success) {
+        return { success: false, error: connectResult.error || '数据库未连接' }
+      }
+
+      const begin = dateRange?.start ?? 0
+      const end = dateRange?.end ?? 0
+      const cursorResult = await wcdbService.openMessageCursor(sessionId, 500, true, begin, end)
+      if (!cursorResult.success || !cursorResult.cursor) {
+        return { success: false, error: cursorResult.error || '打开消息游标失败' }
+      }
+
+      const rows: Record<string, any>[] = []
+      try {
+        let hasMore = true
+        while (hasMore) {
+          const batch = await wcdbService.fetchMessageBatch(cursorResult.cursor)
+          if (!batch.success || !batch.rows) {
+            return { success: false, error: batch.error || '获取消息失败' }
+          }
+          rows.push(...(batch.rows as Record<string, any>[]))
+          hasMore = batch.hasMore === true
+        }
+      } finally {
+        try {
+          await wcdbService.closeMessageCursor(cursorResult.cursor)
+        } catch (e) {
+          console.warn('[ChatService] 关闭游标失败:', e)
+        }
+      }
+
+      const messages = this.normalizeMessageOrder(this.mapRowsToMessages(rows))
+      return { success: true, messages }
+    } catch (e) {
+      console.error('ChatService: 获取完整消息失败:', e)
+      return { success: false, error: String(e) }
+    }
+  }
+
   private normalizeMessageOrder(messages: Message[]): Message[] {
     if (messages.length < 2) return messages
     const first = messages[0]

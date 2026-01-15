@@ -14,6 +14,7 @@ import { analyticsService } from './services/analyticsService'
 import { groupAnalyticsService } from './services/groupAnalyticsService'
 import { annualReportService } from './services/annualReportService'
 import { exportService, ExportOptions } from './services/exportService'
+import { standaloneExportService, StandaloneExportOptions } from './services/standaloneExportService'
 import { KeyService } from './services/keyService'
 
 // 配置自动更新
@@ -458,6 +459,13 @@ function registerIpcHandlers() {
   ipcMain.handle('export:exportSession', async (_, sessionId: string, outputPath: string, options: ExportOptions) => {
     return exportService.exportSessionToChatLab(sessionId, outputPath, options)
   })
+
+  ipcMain.handle(
+    'export:standaloneSessions',
+    async (_, sessionIds: string[], outputDir: string, options: StandaloneExportOptions) => {
+      return standaloneExportService.exportSessions(sessionIds, outputDir, options)
+    }
+  )
 
   // 数据分析相关
   ipcMain.handle('analytics:getOverallStatistics', async () => {

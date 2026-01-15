@@ -162,6 +162,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     exportSessions: (sessionIds: string[], outputDir: string, options: any) =>
       ipcRenderer.invoke('export:exportSessions', sessionIds, outputDir, options),
     exportSession: (sessionId: string, outputPath: string, options: any) =>
-      ipcRenderer.invoke('export:exportSession', sessionId, outputPath, options)
+      ipcRenderer.invoke('export:exportSession', sessionId, outputPath, options),
+    standaloneSessions: (sessionIds: string[], outputDir: string, options: any) =>
+      ipcRenderer.invoke('export:standaloneSessions', sessionIds, outputDir, options)
   }
 })
