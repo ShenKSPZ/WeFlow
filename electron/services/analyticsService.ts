@@ -1,5 +1,8 @@
 import { ConfigService } from './config'
 import { wcdbService } from './wcdbService'
+import { join } from 'path'
+import { readFile, writeFile } from 'fs/promises'
+import { app } from 'electron'
 
 export interface ChatStatistics {
   totalMessages: number
@@ -253,12 +256,28 @@ class AnalyticsService {
     sessionIds: string[],
     beginTimestamp = 0,
     endTimestamp = 0,
-    window?: any
+    window?: any,
+    force = false
   ): Promise<{ success: boolean; data?: any; source?: string; error?: string }> {
     const cacheKey = this.buildAggregateCacheKey(sessionIds, beginTimestamp, endTimestamp)
-    if (this.aggregateCache && this.aggregateCache.key === cacheKey) {
+
+    if (force) {
+      if (this.aggregateCache) this.aggregateCache = null
+      if (this.fallbackAggregateCache) this.fallbackAggregateCache = null
+    }
+
+    if (!force && this.aggregateCache && this.aggregateCache.key === cacheKey) {
       if (Date.now() - this.aggregateCache.updatedAt < 5 * 60 * 1000) {
         return { success: true, data: this.aggregateCache.data, source: 'cache' }
+      }
+    }
+
+    // 尝试从文件加载缓存
+    if (!force) {
+      const fileCache = await this.loadCacheFromFile()
+      if (fileCache && fileCache.key === cacheKey) {
+        this.aggregateCache = fileCache
+        return { success: true, data: fileCache.data, source: 'file-cache' }
       }
     }
 
@@ -291,11 +310,35 @@ class AnalyticsService {
 
     this.aggregatePromise = { key: cacheKey, promise }
     try {
-      return await promise
+      const result = await promise
+      // 如果计算成功，同时写入此文件缓存
+      if (result.success && result.data && result.source !== 'cache') {
+        this.saveCacheToFile({ key: cacheKey, data: this.aggregateCache?.data, updatedAt: Date.now() })
+      }
+      return result
     } finally {
       if (this.aggregatePromise && this.aggregatePromise.key === cacheKey) {
         this.aggregatePromise = null
       }
+    }
+  }
+
+  private getCacheFilePath(): string {
+    return join(app.getPath('userData'), 'analytics_cache.json')
+  }
+
+  private async loadCacheFromFile(): Promise<{ key: string; data: any; updatedAt: number } | null> {
+    try {
+      const raw = await readFile(this.getCacheFilePath(), 'utf-8')
+      return JSON.parse(raw)
+    } catch { return null }
+  }
+
+  private async saveCacheToFile(data: any) {
+    try {
+      await writeFile(this.getCacheFilePath(), JSON.stringify(data))
+    } catch (e) {
+      console.error('保存统计缓存失败:', e)
     }
   }
 
@@ -326,7 +369,7 @@ class AnalyticsService {
     void results
   }
 
-  async getOverallStatistics(): Promise<{ success: boolean; data?: ChatStatistics; error?: string }> {
+  async getOverallStatistics(force = false): Promise<{ success: boolean; data?: ChatStatistics; error?: string }> {
     try {
       const conn = await this.ensureConnected()
       if (!conn.success || !conn.cleanedWxid) return { success: false, error: conn.error }
@@ -340,7 +383,7 @@ class AnalyticsService {
       const win = BrowserWindow.getAllWindows()[0]
       this.setProgress(win, '正在执行原生数据聚合...', 30)
 
-      const result = await this.getAggregateWithFallback(sessionInfo.usernames, 0, 0, win)
+      const result = await this.getAggregateWithFallback(sessionInfo.usernames, 0, 0, win, force)
 
       if (!result.success || !result.data) {
         return { success: false, error: result.error || '聚合统计失败' }
@@ -458,8 +501,8 @@ class AnalyticsService {
 
       const d = result.data
 
-      // SQLite strftime('%w') 返回 0=Sun, 1=Mon...6=Sat
-      // 前端期望 1=Mon...7=Sun
+      // SQLite strftime('%w') 返回 0=周日, 1=周一...6=周六
+      // 前端期望 1=周一...7=周日
       const weekdayDistribution: Record<number, number> = {}
       for (const [w, count] of Object.entries(d.weekday)) {
         const sqliteW = parseInt(w, 10)

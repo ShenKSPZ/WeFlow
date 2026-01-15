@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { Users, BarChart3, Clock, Image, Loader2, RefreshCw, User, Medal, Search, X, ChevronLeft, Copy, Check } from 'lucide-react'
+import { Avatar } from '../components/Avatar'
 import ReactECharts from 'echarts-for-react'
 import DateRangePicker from '../components/DateRangePicker'
 import './GroupAnalyticsPage.scss'
@@ -177,7 +178,7 @@ function GroupAnalyticsPage() {
 
   const getMediaOption = () => {
     if (!mediaStats || mediaStats.typeCounts.length === 0) return {}
-    
+
     // 定义颜色映射
     const colorMap: Record<number, string> = {
       1: '#3b82f6',   // 文本 - 蓝色
@@ -188,13 +189,13 @@ function GroupAnalyticsPage() {
       49: '#14b8a6',  // 链接/文件 - 青色
       [-1]: '#6b7280', // 其他 - 灰色
     }
-    
+
     const data = mediaStats.typeCounts.map(item => ({
       name: item.name,
       value: item.count,
       itemStyle: { color: colorMap[item.type] || '#6b7280' }
     }))
-    
+
     return {
       tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
       series: [{
@@ -202,8 +203,8 @@ function GroupAnalyticsPage() {
         radius: ['40%', '70%'],
         center: ['50%', '50%'],
         itemStyle: { borderRadius: 8, borderColor: 'rgba(255,255,255,0.1)', borderWidth: 2 },
-        label: { 
-          show: true, 
+        label: {
+          show: true,
           formatter: (params: { name: string; percent: number }) => {
             // 只显示占比大于3%的标签
             return params.percent > 3 ? `${params.name}\n${params.percent.toFixed(1)}%` : ''
@@ -256,11 +257,7 @@ function GroupAnalyticsPage() {
           </button>
           <div className="modal-content">
             <div className="member-avatar large">
-              {selectedMember.avatarUrl ? (
-                <img src={selectedMember.avatarUrl} alt="" />
-              ) : (
-                <div className="avatar-placeholder"><User size={48} /></div>
-              )}
+              <Avatar src={selectedMember.avatarUrl} name={selectedMember.displayName} size={96} />
             </div>
             <h3 className="member-display-name">{selectedMember.displayName}</h3>
             <div className="member-details">
@@ -334,7 +331,7 @@ function GroupAnalyticsPage() {
               onClick={() => handleGroupSelect(group)}
             >
               <div className="group-avatar">
-                {group.avatarUrl ? <img src={group.avatarUrl} alt="" /> : <div className="avatar-placeholder"><Users size={20} /></div>}
+                <Avatar src={group.avatarUrl} name={group.displayName} size={44} />
               </div>
               <div className="group-info">
                 <span className="group-name">{group.displayName}</span>
@@ -352,7 +349,7 @@ function GroupAnalyticsPage() {
     <div className="function-menu">
       <div className="selected-group-info">
         <div className="group-avatar large">
-          {selectedGroup?.avatarUrl ? <img src={selectedGroup.avatarUrl} alt="" /> : <div className="avatar-placeholder"><Users size={40} /></div>}
+          <Avatar src={selectedGroup?.avatarUrl} name={selectedGroup?.displayName} size={80} />
         </div>
         <h2>{selectedGroup?.displayName}</h2>
         <p>{selectedGroup?.memberCount} 位成员</p>
@@ -424,7 +421,7 @@ function GroupAnalyticsPage() {
                   {members.map(member => (
                     <div key={member.username} className="member-card" onClick={() => handleMemberClick(member)}>
                       <div className="member-avatar">
-                        {member.avatarUrl ? <img src={member.avatarUrl} alt="" /> : <div className="avatar-placeholder"><User size={20} /></div>}
+                        <Avatar src={member.avatarUrl} name={member.displayName} size={48} />
                       </div>
                       <span className="member-name">{member.displayName}</span>
                     </div>
@@ -437,7 +434,7 @@ function GroupAnalyticsPage() {
                     <div key={item.member.username} className="ranking-item">
                       <span className={`rank ${index < 3 ? 'top' : ''}`}>{index + 1}</span>
                       <div className="contact-avatar">
-                        {item.member.avatarUrl ? <img src={item.member.avatarUrl} alt="" /> : <div className="avatar-placeholder"><User size={20} /></div>}
+                        <Avatar src={item.member.avatarUrl} name={item.member.displayName} size={40} />
                         {index < 3 && <div className={`medal medal-${index + 1}`}><Medal size={10} /></div>}
                       </div>
                       <div className="contact-info">

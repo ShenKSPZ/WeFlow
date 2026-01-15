@@ -45,6 +45,7 @@ export interface ElectronAPI {
     testConnection: (dbPath: string, hexKey: string, wxid: string) => Promise<{ success: boolean; error?: string; sessionCount?: number }>
     open: (dbPath: string, hexKey: string, wxid: string) => Promise<boolean>
     close: () => Promise<boolean>
+
   }
   key: {
     autoGetDbKey: () => Promise<{ success: boolean; key?: string; error?: string; logs?: string[] }>
@@ -95,6 +96,7 @@ export interface ElectronAPI {
     getImageData: (sessionId: string, msgId: string) => Promise<{ success: boolean; data?: string; error?: string }>
     getVoiceData: (sessionId: string, msgId: string) => Promise<{ success: boolean; data?: string; error?: string }>
   }
+
   image: {
     decrypt: (payload: { sessionId?: string; imageMd5?: string; imageDatName?: string; force?: boolean }) => Promise<{ success: boolean; localPath?: string; error?: string }>
     resolveCache: (payload: { sessionId?: string; imageMd5?: string; imageDatName?: string }) => Promise<{ success: boolean; localPath?: string; hasUpdate?: boolean; error?: string }>
@@ -103,7 +105,7 @@ export interface ElectronAPI {
     onCacheResolved: (callback: (payload: { cacheKey: string; imageMd5?: string; imageDatName?: string; localPath: string }) => void) => () => void
   }
   analytics: {
-    getOverallStatistics: () => Promise<{
+    getOverallStatistics: (force?: boolean) => Promise<{
       success: boolean
       data?: {
         totalMessages: number
@@ -262,12 +264,12 @@ export interface ElectronAPI {
           fastestFriend: string
           fastestTime: number
         } | null
-      topPhrases: Array<{
-        phrase: string
-        count: number
-      }>
-    }
-    error?: string
+        topPhrases: Array<{
+          phrase: string
+          count: number
+        }>
+      }
+      error?: string
     }>
     exportImages: (payload: { baseDir: string; folderName: string; images: Array<{ name: string; dataUrl: string }> }) => Promise<{
       success: boolean

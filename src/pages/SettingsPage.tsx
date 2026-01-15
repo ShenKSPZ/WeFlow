@@ -484,6 +484,7 @@ function SettingsPage() {
           <Plug size={14} /> {isFetchingImageKey ? '获取中...' : '自动获取图片密钥'}
         </button>
         {imageKeyStatus && <div className="form-hint status-text">{imageKeyStatus}</div>}
+        {isFetchingImageKey && <div className="form-hint status-text">正在扫描内存，请稍候...</div>}
       </div>
 
       <div className="form-group">

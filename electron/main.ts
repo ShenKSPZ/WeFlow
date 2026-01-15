@@ -17,6 +17,7 @@ import { exportService, ExportOptions } from './services/exportService'
 import { standaloneExportService, StandaloneExportOptions } from './services/standaloneExportService'
 import { KeyService } from './services/keyService'
 
+
 // 配置自动更新
 autoUpdater.autoDownload = false
 autoUpdater.autoInstallOnAppQuit = true
@@ -382,6 +383,8 @@ function registerIpcHandlers() {
     return true
   })
 
+
+
   // 聊天相关
   ipcMain.handle('chat:connect', async () => {
     return chatService.connect()
@@ -409,6 +412,10 @@ function registerIpcHandlers() {
 
   ipcMain.handle('chat:getContactAvatar', async (_, username: string) => {
     return chatService.getContactAvatar(username)
+  })
+
+  ipcMain.handle('chat:getCachedMessages', async (_, sessionId: string) => {
+    return chatService.getCachedSessionMessages(sessionId)
   })
 
   ipcMain.handle('chat:getMyAvatarUrl', async () => {
@@ -440,6 +447,9 @@ function registerIpcHandlers() {
     return chatService.getMessageById(sessionId, localId)
   })
 
+  // 私聊克隆
+
+
   ipcMain.handle('image:decrypt', async (_, payload: { sessionId?: string; imageMd5?: string; imageDatName?: string; force?: boolean }) => {
     return imageDecryptService.decryptImage(payload)
   })
@@ -468,8 +478,8 @@ function registerIpcHandlers() {
   )
 
   // 数据分析相关
-  ipcMain.handle('analytics:getOverallStatistics', async () => {
-    return analyticsService.getOverallStatistics()
+  ipcMain.handle('analytics:getOverallStatistics', async (_, force?: boolean) => {
+    return analyticsService.getOverallStatistics(force)
   })
 
   ipcMain.handle('analytics:getContactRankings', async (_, limit?: number) => {
@@ -683,9 +693,11 @@ function checkForUpdatesOnStartup() {
 
 app.whenReady().then(() => {
   configService = new ConfigService()
-  const resourcesPath = app.isPackaged
+  const candidateResources = app.isPackaged
     ? join(process.resourcesPath, 'resources')
     : join(app.getAppPath(), 'resources')
+  const fallbackResources = join(process.cwd(), 'resources')
+  const resourcesPath = existsSync(candidateResources) ? candidateResources : fallbackResources
   const userDataPath = app.getPath('userData')
   wcdbService.setPaths(resourcesPath, userDataPath)
   wcdbService.setLogEnabled(configService.get('logEnabled') === true)

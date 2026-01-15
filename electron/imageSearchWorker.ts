@@ -62,6 +62,12 @@ function isThumbnailDat(fileName: string): boolean {
   return fileName.includes('.t.dat') || fileName.includes('_t.dat')
 }
 
+function isHdDat(fileName: string): boolean {
+  const lower = fileName.toLowerCase()
+  const base = lower.endsWith('.dat') ? lower.slice(0, -4) : lower
+  return base.endsWith('_hd') || base.endsWith('_h')
+}
+
 function walkForDat(
   root: string,
   datName: string,
@@ -101,6 +107,8 @@ function walkForDat(
       if (!isLikelyImageDatBase(baseLower)) continue
       if (!hasXVariant(baseLower)) continue
       if (!matchesDatName(lower, datName)) continue
+      // 排除高清图片格式 (_hd, _h)
+      if (isHdDat(lower)) continue
       matchedBases.add(baseLower)
       const isThumb = isThumbnailDat(lower)
       if (!allowThumbnail && isThumb) continue

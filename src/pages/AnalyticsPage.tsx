@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react'
+import { useLocation } from 'react-router-dom'
 import { Users, Clock, MessageSquare, Send, Inbox, Calendar, Loader2, RefreshCw, User, Medal } from 'lucide-react'
 import ReactECharts from 'echarts-for-react'
 import { useAnalyticsStore } from '../stores/analyticsStore'
 import { useThemeStore } from '../stores/themeStore'
 import './AnalyticsPage.scss'
 import './DataManagementPage.scss'
+import { Avatar } from '../components/Avatar'
 
 function AnalyticsPage() {
   const [isLoading, setIsLoading] = useState(false)
@@ -28,7 +30,7 @@ function AnalyticsPage() {
 
     try {
       setLoadingStatus('正在统计消息数据...')
-      const statsResult = await window.electronAPI.analytics.getOverallStatistics()
+      const statsResult = await window.electronAPI.analytics.getOverallStatistics(forceRefresh)
       if (statsResult.success && statsResult.data) {
         setStatistics(statsResult.data)
       } else {
@@ -55,7 +57,12 @@ function AnalyticsPage() {
     }
   }
 
-  useEffect(() => { loadData() }, [])
+  const location = useLocation()
+
+  useEffect(() => {
+    const force = location.state?.forceRefresh === true
+    loadData(force)
+  }, [location.state])
 
   const handleRefresh = () => loadData(true)
 
@@ -289,7 +296,7 @@ function AnalyticsPage() {
               <div key={contact.username} className="ranking-item">
                 <span className={`rank ${index < 3 ? 'top' : ''}`}>{index + 1}</span>
                 <div className="contact-avatar">
-                  {contact.avatarUrl ? <img src={contact.avatarUrl} alt="" /> : <div className="avatar-placeholder"><User size={20} /></div>}
+                  <Avatar src={contact.avatarUrl} name={contact.displayName} size={36} />
                   {index < 3 && <div className={`medal medal-${index + 1}`}><Medal size={10} /></div>}
                 </div>
                 <div className="contact-info">

@@ -19,6 +19,7 @@ interface ChatLabMeta {
   platform: string
   type: 'group' | 'private'
   groupId?: string
+  groupAvatar?: string
 }
 
 interface ChatLabMember {
@@ -425,6 +426,81 @@ class ExportService {
     return { rows, memberSet, firstTime, lastTime }
   }
 
+  // 补齐群成员，避免只导出发言者导致头像缺失
+  private async mergeGroupMembers(
+    chatroomId: string,
+    memberSet: Map<string, { member: ChatLabMember; avatarUrl?: string }>,
+    includeAvatars: boolean
+  ): Promise<void> {
+    const result = await wcdbService.getGroupMembers(chatroomId)
+    if (!result.success || !result.members || result.members.length === 0) return
+
+    const rawMembers = result.members as Array<{
+      username?: string
+      avatarUrl?: string
+      nickname?: string
+      displayName?: string
+      remark?: string
+      originalName?: string
+    }>
+    const usernames = rawMembers
+      .map((member) => member.username)
+      .filter((username): username is string => Boolean(username))
+    if (usernames.length === 0) return
+
+    const lookupUsernames = new Set<string>()
+    for (const username of usernames) {
+      lookupUsernames.add(username)
+      const cleaned = this.cleanAccountDirName(username)
+      if (cleaned && cleaned !== username) {
+        lookupUsernames.add(cleaned)
+      }
+    }
+
+    const [displayNames, avatarUrls] = await Promise.all([
+      wcdbService.getDisplayNames(Array.from(lookupUsernames)),
+      includeAvatars ? wcdbService.getAvatarUrls(Array.from(lookupUsernames)) : Promise.resolve({ success: true, map: {} as Record<string, string> })
+    ])
+
+    for (const member of rawMembers) {
+      const username = member.username
+      if (!username) continue
+
+      const cleaned = this.cleanAccountDirName(username)
+      const displayName = displayNames.success && displayNames.map
+        ? (displayNames.map[username] || (cleaned ? displayNames.map[cleaned] : undefined) || username)
+        : username
+      const groupNickname = member.nickname || member.displayName || member.remark || member.originalName
+      const avatarUrl = includeAvatars && avatarUrls.success && avatarUrls.map
+        ? (avatarUrls.map[username] || (cleaned ? avatarUrls.map[cleaned] : undefined) || member.avatarUrl)
+        : member.avatarUrl
+
+      const existing = memberSet.get(username)
+      if (existing) {
+        if (displayName && existing.member.accountName === existing.member.platformId && displayName !== existing.member.platformId) {
+          existing.member.accountName = displayName
+        }
+        if (groupNickname && !existing.member.groupNickname) {
+          existing.member.groupNickname = groupNickname
+        }
+        if (!existing.avatarUrl && avatarUrl) {
+          existing.avatarUrl = avatarUrl
+        }
+        memberSet.set(username, existing)
+        continue
+      }
+
+      const chatlabMember: ChatLabMember = {
+        platformId: username,
+        accountName: displayName
+      }
+      if (groupNickname) {
+        chatlabMember.groupNickname = groupNickname
+      }
+      memberSet.set(username, { member: chatlabMember, avatarUrl })
+    }
+  }
+
   private resolveAvatarFile(avatarUrl?: string): { data?: Buffer; sourcePath?: string; sourceUrl?: string; ext: string; mime?: string } | null {
     if (!avatarUrl) return null
     if (avatarUrl.startsWith('data:')) {
@@ -514,7 +590,11 @@ class ExportService {
           }
         }
         if (!data) continue
-        const finalMime = mime || this.inferImageMime(fileInfo.ext)
+
+        // 优先使用内容检测出的 MIME 类型
+        const detectedMime = this.detectMimeType(data)
+        const finalMime = detectedMime || mime || this.inferImageMime(fileInfo.ext)
+
         const base64 = data.toString('base64')
         result.set(member.username, `data:${finalMime};base64,${base64}`)
       } catch {
@@ -523,6 +603,39 @@ class ExportService {
     }
 
     return result
+  }
+
+  private detectMimeType(buffer: Buffer): string | null {
+    if (buffer.length < 4) return null
+
+    // PNG: 89 50 4E 47
+    if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
+      return 'image/png'
+    }
+
+    // JPEG: FF D8 FF
+    if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
+      return 'image/jpeg'
+    }
+
+    // GIF: 47 49 46 38
+    if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x38) {
+      return 'image/gif'
+    }
+
+    // WEBP: RIFF ... WEBP
+    if (buffer.length >= 12 &&
+      buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
+      buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) {
+      return 'image/webp'
+    }
+
+    // BMP: 42 4D
+    if (buffer[0] === 0x42 && buffer[1] === 0x4D) {
+      return 'image/bmp'
+    }
+
+    return null
   }
 
   private inferImageMime(ext: string): string {
@@ -567,6 +680,9 @@ class ExportService {
 
       const collected = await this.collectMessages(sessionId, cleanedMyWxid, options.dateRange)
       const allMessages = collected.rows
+      if (isGroup) {
+        await this.mergeGroupMembers(sessionId, collected.memberSet, options.exportAvatars === true)
+      }
 
       allMessages.sort((a, b) => a.createTime - b.createTime)
 
@@ -580,11 +696,13 @@ class ExportService {
       const chatLabMessages: ChatLabMessage[] = allMessages.map((msg) => {
         const memberInfo = collected.memberSet.get(msg.senderUsername)?.member || {
           platformId: msg.senderUsername,
-          accountName: msg.senderUsername
+          accountName: msg.senderUsername,
+          groupNickname: undefined
         }
         return {
           sender: msg.senderUsername,
           accountName: memberInfo.accountName,
+          groupNickname: memberInfo.groupNickname,
           timestamp: msg.createTime,
           type: this.convertMessageType(msg.localType, msg.content),
           content: this.parseMessageContent(msg.content, msg.localType)
@@ -603,6 +721,7 @@ class ExportService {
         )
         : new Map<string, string>()
 
+      const sessionAvatar = avatarMap.get(sessionId)
       const members = Array.from(collected.memberSet.values()).map((info) => {
         const avatar = avatarMap.get(info.member.platformId)
         return avatar ? { ...info.member, avatar } : info.member
@@ -618,7 +737,8 @@ class ExportService {
           name: sessionInfo.displayName,
           platform: 'wechat',
           type: isGroup ? 'group' : 'private',
-          ...(isGroup && { groupId: sessionId })
+          ...(isGroup && { groupId: sessionId }),
+          ...(sessionAvatar && { groupAvatar: sessionAvatar })
         },
         members,
         messages: chatLabMessages
@@ -729,7 +849,8 @@ class ExportService {
           displayName: sessionInfo.displayName,
           type: isGroup ? '群聊' : '私聊',
           lastTimestamp: collected.lastTime,
-          messageCount: allMessages.length
+          messageCount: allMessages.length,
+          avatar: undefined as string | undefined
         },
         messages: allMessages
       }

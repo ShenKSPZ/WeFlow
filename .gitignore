@@ -13,6 +13,7 @@ dist
 dist-electron
 dist-ssr
 *.local
+test/
 
 # Editor directories and files
 .vscode/*
@@ -41,6 +42,10 @@ release
 
 # OS
 Thumbs.db
+
+# Electron dev cache
+.electron/
+.cache/
 
 
 

@@ -7,6 +7,7 @@ import WelcomePage from './pages/WelcomePage'
 import HomePage from './pages/HomePage'
 import ChatPage from './pages/ChatPage'
 import AnalyticsPage from './pages/AnalyticsPage'
+import AnalyticsWelcomePage from './pages/AnalyticsWelcomePage'
 import AnnualReportPage from './pages/AnnualReportPage'
 import AnnualReportWindow from './pages/AnnualReportWindow'
 import AgreementPage from './pages/AgreementPage'
@@ -14,6 +15,7 @@ import GroupAnalyticsPage from './pages/GroupAnalyticsPage'
 import DataManagementPage from './pages/DataManagementPage'
 import SettingsPage from './pages/SettingsPage'
 import ExportPage from './pages/ExportPage'
+
 import { useAppStore } from './stores/appStore'
 import { themes, useThemeStore, type ThemeId } from './stores/themeStore'
 import * as configService from './services/config'
@@ -188,7 +190,7 @@ function App() {
           }
           console.log('检测到已保存的配置，正在自动连接...')
           const result = await window.electronAPI.chat.connect()
-          
+
           if (result.success) {
             console.log('自动连接成功')
             setDbConnected(true, dbPath)
@@ -307,7 +309,8 @@ function App() {
               <Route path="/" element={<HomePage />} />
               <Route path="/home" element={<HomePage />} />
               <Route path="/chat" element={<ChatPage />} />
-              <Route path="/analytics" element={<AnalyticsPage />} />
+              <Route path="/analytics" element={<AnalyticsWelcomePage />} />
+              <Route path="/analytics/view" element={<AnalyticsPage />} />
               <Route path="/group-analytics" element={<GroupAnalyticsPage />} />
               <Route path="/annual-report" element={<AnnualReportPage />} />
               <Route path="/annual-report/view" element={<AnnualReportWindow />} />

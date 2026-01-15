@@ -15,6 +15,7 @@ export const CONFIG_KEYS = {
   AGREEMENT_ACCEPTED: 'agreementAccepted',
   LOG_ENABLED: 'logEnabled',
   ONBOARDING_DONE: 'onboardingDone',
+  LLM_MODEL_PATH: 'llmModelPath',
   IMAGE_XOR_KEY: 'imageXorKey',
   IMAGE_AES_KEY: 'imageAesKey'
 } as const
@@ -130,6 +131,17 @@ export async function getLogEnabled(): Promise<boolean> {
 // 设置日志开关
 export async function setLogEnabled(enabled: boolean): Promise<void> {
   await config.set(CONFIG_KEYS.LOG_ENABLED, enabled)
+}
+
+// 获取 LLM 模型路径
+export async function getLlmModelPath(): Promise<string | null> {
+  const value = await config.get(CONFIG_KEYS.LLM_MODEL_PATH)
+  return (value as string) || null
+}
+
+// 设置 LLM 模型路径
+export async function setLlmModelPath(path: string): Promise<void> {
+  await config.set(CONFIG_KEYS.LLM_MODEL_PATH, path)
 }
 
 // 清除所有配置

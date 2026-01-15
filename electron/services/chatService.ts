@@ -14,6 +14,8 @@ import { app } from 'electron'
 const execFileAsync = promisify(execFile)
 import { ConfigService } from './config'
 import { wcdbService } from './wcdbService'
+import { MessageCacheService } from './messageCacheService'
+import { ContactCacheService, ContactCacheEntry } from './contactCacheService'
 
 type HardlinkState = {
   db: Database.Database
@@ -56,6 +58,7 @@ export interface Message {
   aesKey?: string
   encrypVer?: number
   cdnThumbUrl?: string
+  voiceDurationSeconds?: number
 }
 
 export interface Contact {
@@ -74,13 +77,19 @@ class ChatService {
   private connected = false
   private messageCursors: Map<string, { cursor: number; fetched: number; batchSize: number }> = new Map()
   private readonly messageBatchDefault = 50
-  private avatarCache: Map<string, { avatarUrl?: string; displayName?: string; updatedAt: number }> = new Map()
+  private avatarCache: Map<string, ContactCacheEntry>
   private readonly avatarCacheTtlMs = 10 * 60 * 1000
   private readonly defaultV1AesKey = 'cfcd208495d565ef'
   private hardlinkCache = new Map<string, HardlinkState>()
+  private readonly contactCacheService: ContactCacheService
+  private readonly messageCacheService: MessageCacheService
 
   constructor() {
     this.configService = new ConfigService()
+    this.contactCacheService = new ContactCacheService(this.configService.get('cachePath'))
+    const persisted = this.contactCacheService.getAllEntries()
+    this.avatarCache = new Map(Object.entries(persisted))
+    this.messageCacheService = new MessageCacheService(this.configService.get('cachePath'))
   }
 
   /**
@@ -231,7 +240,7 @@ class ChatService {
         let displayName = username
         let avatarUrl: string | undefined = undefined
         const cached = this.avatarCache.get(username)
-        if (cached && now - cached.updatedAt < this.avatarCacheTtlMs) {
+        if (cached) {
           displayName = cached.displayName || username
           avatarUrl = cached.avatarUrl
         }
@@ -279,6 +288,7 @@ class ChatService {
       const now = Date.now()
       const missing: string[] = []
       const result: Record<string, { displayName?: string; avatarUrl?: string }> = {}
+      const updatedEntries: Record<string, ContactCacheEntry> = {}
 
       // 检查缓存
       for (const username of usernames) {
@@ -304,17 +314,20 @@ class ChatService {
           const displayName = displayNames.success && displayNames.map ? displayNames.map[username] : undefined
           const avatarUrl = avatarUrls.success && avatarUrls.map ? avatarUrls.map[username] : undefined
 
-          result[username] = { displayName, avatarUrl }
-
-          // 更新缓存
-          this.avatarCache.set(username, {
+          const cacheEntry: ContactCacheEntry = {
             displayName: displayName || username,
             avatarUrl,
             updatedAt: now
-          })
+          }
+          result[username] = { displayName, avatarUrl }
+          // 更新缓存并记录持久化
+          this.avatarCache.set(username, cacheEntry)
+          updatedEntries[username] = cacheEntry
+        }
+        if (Object.keys(updatedEntries).length > 0) {
+          this.contactCacheService.setEntries(updatedEntries)
         }
       }
-
       return { success: true, contacts: result }
     } catch (e) {
       console.error('ChatService: 补充联系人信息失败:', e)
@@ -456,10 +469,25 @@ class ChatService {
       }
 
       state.fetched += rows.length
+      this.messageCacheService.set(sessionId, normalized)
       return { success: true, messages: normalized, hasMore }
     } catch (e) {
       console.error('ChatService: 获取消息失败:', e)
       return { success: false, error: String(e) }
+    }
+  }
+
+  async getCachedSessionMessages(sessionId: string): Promise<{ success: boolean; messages?: Message[]; error?: string }> {
+    try {
+      if (!sessionId) return { success: true, messages: [] }
+      const entry = this.messageCacheService.get(sessionId)
+      if (!entry || !Array.isArray(entry.messages)) {
+        return { success: true, messages: [] }
+      }
+      return { success: true, messages: entry.messages.slice() }
+    } catch (error) {
+      console.error('ChatService: 获取缓存消息失败:', error)
+      return { success: false, error: String(error) }
     }
   }
 
@@ -686,24 +714,24 @@ class ChatService {
 
     const messages: Message[] = []
     for (const row of rows) {
-      const content = this.decodeMessageContent(
-        this.getRowField(row, [
-          'message_content',
-          'messageContent',
-          'content',
-          'msg_content',
-          'msgContent',
-          'WCDB_CT_message_content',
-          'WCDB_CT_messageContent'
-        ]),
-        this.getRowField(row, [
-          'compress_content',
-          'compressContent',
-          'compressed_content',
-          'WCDB_CT_compress_content',
-          'WCDB_CT_compressContent'
-        ])
-      )
+      const rawMessageContent = this.getRowField(row, [
+        'message_content',
+        'messageContent',
+        'content',
+        'msg_content',
+        'msgContent',
+        'WCDB_CT_message_content',
+        'WCDB_CT_messageContent'
+      ]);
+      const rawCompressContent = this.getRowField(row, [
+        'compress_content',
+        'compressContent',
+        'compressed_content',
+        'WCDB_CT_compress_content',
+        'WCDB_CT_compressContent'
+      ]);
+
+      const content = this.decodeMessageContent(rawMessageContent, rawCompressContent);
       const localType = this.getRowInt(row, ['local_type', 'localType', 'type', 'msg_type', 'msgType', 'WCDB_CT_local_type'], 1)
       const isSendRaw = this.getRowField(row, ['computed_is_send', 'computedIsSend', 'is_send', 'isSend', 'WCDB_CT_is_send'])
       let isSend = isSendRaw === null ? null : parseInt(isSendRaw, 10)
@@ -715,6 +743,16 @@ class ChatService {
         const expectedIsSend = (senderLower === myWxidLower || senderLower === cleanedWxidLower) ? 1 : 0
         if (isSend === null) {
           isSend = expectedIsSend
+          // [DEBUG] Issue #34: 记录 isSend 推断过程
+          if (expectedIsSend === 0 && localType === 1) {
+            // 仅在被判为接收且是文本消息时记录，避免刷屏
+            // console.log(`[ChatService] inferred isSend=0: sender=${senderUsername}, myWxid=${myWxid} (cleaned=${cleanedWxid})`)
+          }
+        }
+      } else if (senderUsername && !myWxid) {
+        // [DEBUG] Issue #34: 未配置 myWxid，无法判断是否发送
+        if (messages.length < 5) {
+          console.warn(`[ChatService] Warning: myWxid not set. Cannot determine if message is sent by me. sender=${senderUsername}`)
         }
       }
 
@@ -1500,9 +1538,9 @@ class ChatService {
    */
   private decodeMessageContent(messageContent: any, compressContent: any): string {
     // 优先使用 compress_content
-    let content = this.decodeMaybeCompressed(compressContent)
+    let content = this.decodeMaybeCompressed(compressContent, 'compress_content')
     if (!content || content.length === 0) {
-      content = this.decodeMaybeCompressed(messageContent)
+      content = this.decodeMaybeCompressed(messageContent, 'message_content')
     }
     return content
   }
@@ -1510,12 +1548,14 @@ class ChatService {
   /**
    * 尝试解码可能压缩的内容
    */
-  private decodeMaybeCompressed(raw: any): string {
+  private decodeMaybeCompressed(raw: any, fieldName: string = 'unknown'): string {
     if (!raw) return ''
+
+    // console.log(`[ChatService] Decoding ${fieldName}: type=${typeof raw}`, raw)
 
     // 如果是 Buffer/Uint8Array
     if (Buffer.isBuffer(raw) || raw instanceof Uint8Array) {
-      return this.decodeBinaryContent(Buffer.from(raw))
+      return this.decodeBinaryContent(Buffer.from(raw), String(raw))
     }
 
     // 如果是字符串
@@ -1526,7 +1566,9 @@ class ChatService {
       if (this.looksLikeHex(raw)) {
         const bytes = Buffer.from(raw, 'hex')
         if (bytes.length > 0) {
-          return this.decodeBinaryContent(bytes)
+          const result = this.decodeBinaryContent(bytes, raw)
+          // console.log(`[ChatService] HEX decoded result: ${result}`)
+          return result
         }
       }
 
@@ -1534,7 +1576,7 @@ class ChatService {
       if (this.looksLikeBase64(raw)) {
         try {
           const bytes = Buffer.from(raw, 'base64')
-          return this.decodeBinaryContent(bytes)
+          return this.decodeBinaryContent(bytes, raw)
         } catch { }
       }
 
@@ -1548,7 +1590,7 @@ class ChatService {
   /**
    * 解码二进制内容（处理 zstd 压缩）
    */
-  private decodeBinaryContent(data: Buffer): string {
+  private decodeBinaryContent(data: Buffer, fallbackValue?: string): string {
     if (data.length === 0) return ''
 
     try {
@@ -1575,10 +1617,16 @@ class ChatService {
         return decoded.replace(/\uFFFD/g, '')
       }
 
+      // 如果提供了 fallbackValue，且解码结果看起来像二进制垃圾，则返回 fallbackValue
+      if (fallbackValue && replacementCount > 0) {
+        // console.log(`[ChatService] Binary garbage detected, using fallback: ${fallbackValue}`)
+        return fallbackValue
+      }
+
       // 尝试 latin1 解码
       return data.toString('latin1')
     } catch {
-      return ''
+      return fallbackValue || ''
     }
   }
 
@@ -1657,7 +1705,13 @@ class ChatService {
       const avatarResult = await wcdbService.getAvatarUrls([username])
       const avatarUrl = avatarResult.success && avatarResult.map ? avatarResult.map[username] : undefined
       const displayName = contact?.remark || contact?.nickName || contact?.alias || cached?.displayName || username
-      this.avatarCache.set(username, { avatarUrl, displayName, updatedAt: Date.now() })
+      const cacheEntry: ContactCacheEntry = {
+        avatarUrl,
+        displayName,
+        updatedAt: Date.now()
+      }
+      this.avatarCache.set(username, cacheEntry)
+      this.contactCacheService.setEntries({ [username]: cacheEntry })
       return { avatarUrl, displayName }
     } catch {
       return null
@@ -1680,11 +1734,24 @@ class ChatService {
       }
 
       const cleanedWxid = this.cleanAccountDirName(myWxid)
-      const result = await wcdbService.getAvatarUrls([myWxid, cleanedWxid])
+      // 增加 'self' 作为兜底标识符，微信有时将个人信息存储在 'self' 记录中
+      const fetchList = Array.from(new Set([myWxid, cleanedWxid, 'self']))
+
+      console.log(`[ChatService] 尝试获取个人头像, wxids: ${JSON.stringify(fetchList)}`)
+      const result = await wcdbService.getAvatarUrls(fetchList)
+
       if (result.success && result.map) {
-        const avatarUrl = result.map[myWxid] || result.map[cleanedWxid]
-        return { success: true, avatarUrl }
+        // 按优先级尝试匹配
+        const avatarUrl = result.map[myWxid] || result.map[cleanedWxid] || result.map['self']
+        if (avatarUrl) {
+          console.log(`[ChatService] 成功获取个人头像: ${avatarUrl.substring(0, 50)}...`)
+          return { success: true, avatarUrl }
+        }
+        console.warn(`[ChatService] 未能在 contact.db 中找到个人头像, 请求列表: ${JSON.stringify(fetchList)}`)
+        return { success: true, avatarUrl: undefined }
       }
+
+      console.error(`[ChatService] 查询个人头像失败: ${result.error || '未知错误'}`)
       return { success: true, avatarUrl: undefined }
     } catch (e) {
       console.error('ChatService: 获取当前用户头像失败:', e)
@@ -2509,12 +2576,12 @@ class ChatService {
     }
 
     const aesData = payload.subarray(0, alignedAesSize)
-    let unpadded = Buffer.alloc(0)
+    let unpadded: Buffer = Buffer.alloc(0)
     if (aesData.length > 0) {
       const decipher = crypto.createDecipheriv('aes-128-ecb', aesKey, Buffer.alloc(0))
       decipher.setAutoPadding(false)
       const decrypted = Buffer.concat([decipher.update(aesData), decipher.final()])
-      unpadded = this.strictRemovePadding(decrypted)
+      unpadded = this.strictRemovePadding(decrypted) as Buffer
     }
 
     const remaining = payload.subarray(alignedAesSize)
@@ -2522,21 +2589,21 @@ class ChatService {
       throw new Error('文件格式异常：XOR 数据长度不合法')
     }
 
-    let rawData = Buffer.alloc(0)
-    let xoredData = Buffer.alloc(0)
+    let rawData: Buffer = Buffer.alloc(0)
+    let xoredData: Buffer = Buffer.alloc(0)
     if (xorSize > 0) {
       const rawLength = remaining.length - xorSize
       if (rawLength < 0) {
         throw new Error('文件格式异常：原始数据长度小于XOR长度')
       }
-      rawData = remaining.subarray(0, rawLength)
+      rawData = remaining.subarray(0, rawLength) as Buffer
       const xorData = remaining.subarray(rawLength)
       xoredData = Buffer.alloc(xorData.length)
       for (let i = 0; i < xorData.length; i++) {
         xoredData[i] = xorData[i] ^ xorKey
       }
     } else {
-      rawData = remaining
+      rawData = remaining as Buffer
       xoredData = Buffer.alloc(0)
     }
 

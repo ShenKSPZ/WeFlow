@@ -1,14 +1,14 @@
 import { app, BrowserWindow } from 'electron'
 import { basename, dirname, extname, join } from 'path'
 import { pathToFileURL } from 'url'
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, appendFileSync } from 'fs'
 import { writeFile } from 'fs/promises'
 import crypto from 'crypto'
 import { Worker } from 'worker_threads'
 import { ConfigService } from './config'
 import { wcdbService } from './wcdbService'
 
-type DecryptResult = { 
+type DecryptResult = {
   success: boolean
   localPath?: string
   error?: string
@@ -32,10 +32,44 @@ export class ImageDecryptService {
 
   private logInfo(message: string, meta?: Record<string, unknown>): void {
     if (!this.configService.get('logEnabled')) return
+    const timestamp = new Date().toISOString()
+    const metaStr = meta ? ` ${JSON.stringify(meta)}` : ''
+    const logLine = `[${timestamp}] [ImageDecrypt] ${message}${metaStr}\n`
+
+    // 同时输出到控制台
     if (meta) {
       console.info(message, meta)
     } else {
       console.info(message)
+    }
+
+    // 写入日志文件
+    this.writeLog(logLine)
+  }
+
+  private logError(message: string, error?: unknown, meta?: Record<string, unknown>): void {
+    if (!this.configService.get('logEnabled')) return
+    const timestamp = new Date().toISOString()
+    const errorStr = error ? ` Error: ${String(error)}` : ''
+    const metaStr = meta ? ` ${JSON.stringify(meta)}` : ''
+    const logLine = `[${timestamp}] [ImageDecrypt] ERROR: ${message}${errorStr}${metaStr}\n`
+
+    // 同时输出到控制台
+    console.error(message, error, meta)
+
+    // 写入日志文件
+    this.writeLog(logLine)
+  }
+
+  private writeLog(line: string): void {
+    try {
+      const logDir = join(app.getPath('userData'), 'logs')
+      if (!existsSync(logDir)) {
+        mkdirSync(logDir, { recursive: true })
+      }
+      appendFileSync(join(logDir, 'wcdb.log'), line, { encoding: 'utf8' })
+    } catch (err) {
+      console.error('写入日志失败:', err)
     }
   }
 
@@ -49,6 +83,7 @@ export class ImageDecryptService {
     for (const key of cacheKeys) {
       const cached = this.resolvedCache.get(key)
       if (cached && existsSync(cached) && this.isImageFile(cached)) {
+        this.logInfo('缓存命中(从Map)', { key, path: cached, isThumb: this.isThumbnailPath(cached) })
         const dataUrl = this.fileToDataUrl(cached)
         const isThumb = this.isThumbnailPath(cached)
         const hasUpdate = isThumb ? (this.updateFlags.get(key) ?? false) : false
@@ -68,6 +103,7 @@ export class ImageDecryptService {
     for (const key of cacheKeys) {
       const existing = this.findCachedOutput(key, false, payload.sessionId)
       if (existing) {
+        this.logInfo('缓存命中(文件系统)', { key, path: existing, isThumb: this.isThumbnailPath(existing) })
         this.cacheResolvedPaths(key, payload.imageMd5, payload.imageDatName, existing)
         const dataUrl = this.fileToDataUrl(existing)
         const isThumb = this.isThumbnailPath(existing)
@@ -81,6 +117,7 @@ export class ImageDecryptService {
         return { success: true, localPath: dataUrl || this.filePathToUrl(existing), hasUpdate }
       }
     }
+    this.logInfo('未找到缓存', { md5: payload.imageMd5, datName: payload.imageDatName })
     return { success: false, error: '未找到缓存图片' }
   }
 
@@ -120,15 +157,18 @@ export class ImageDecryptService {
     payload: { sessionId?: string; imageMd5?: string; imageDatName?: string; force?: boolean },
     cacheKey: string
   ): Promise<DecryptResult> {
+    this.logInfo('开始解密图片', { md5: payload.imageMd5, datName: payload.imageDatName, force: payload.force })
     try {
       const wxid = this.configService.get('myWxid')
       const dbPath = this.configService.get('dbPath')
       if (!wxid || !dbPath) {
+        this.logError('配置缺失', undefined, { wxid: !!wxid, dbPath: !!dbPath })
         return { success: false, error: '未配置账号或数据库路径' }
       }
 
       const accountDir = this.resolveAccountDir(dbPath, wxid)
       if (!accountDir) {
+        this.logError('未找到账号目录', undefined, { dbPath, wxid })
         return { success: false, error: '未找到账号目录' }
       }
 
@@ -139,14 +179,18 @@ export class ImageDecryptService {
         payload.sessionId,
         { allowThumbnail: !payload.force, skipResolvedCache: Boolean(payload.force) }
       )
-      
+
       // 如果要求高清图但没找到，直接返回提示
       if (!datPath && payload.force) {
+        this.logError('未找到高清图', undefined, { md5: payload.imageMd5, datName: payload.imageDatName })
         return { success: false, error: '未找到高清图，请在微信中点开该图片查看后重试' }
       }
       if (!datPath) {
+        this.logError('未找到DAT文件', undefined, { md5: payload.imageMd5, datName: payload.imageDatName })
         return { success: false, error: '未找到图片文件' }
       }
+
+      this.logInfo('找到DAT文件', { datPath })
 
       if (!extname(datPath).toLowerCase().includes('dat')) {
         this.cacheResolvedPaths(cacheKey, payload.imageMd5, payload.imageDatName, datPath)
@@ -160,6 +204,7 @@ export class ImageDecryptService {
       // 查找已缓存的解密文件
       const existing = this.findCachedOutput(cacheKey, payload.force, payload.sessionId)
       if (existing) {
+        this.logInfo('找到已解密文件', { existing, isHd: this.isHdPath(existing) })
         const isHd = this.isHdPath(existing)
         // 如果要求高清但找到的是缩略图，继续解密高清图
         if (!(payload.force && !isHd)) {
@@ -192,13 +237,15 @@ export class ImageDecryptService {
       const aesKeyRaw = this.configService.get('imageAesKey')
       const aesKey = this.resolveAesKey(aesKeyRaw)
 
+      this.logInfo('开始解密DAT文件', { datPath, xorKey, hasAesKey: !!aesKey })
       const decrypted = await this.decryptDatAuto(datPath, xorKey, aesKey)
-      
+
       const ext = this.detectImageExtension(decrypted) || '.jpg'
 
       const outputPath = this.getCacheOutputPathFromDat(datPath, ext, payload.sessionId)
       await writeFile(outputPath, decrypted)
-      
+      this.logInfo('解密成功', { outputPath, size: decrypted.length })
+
       const isThumb = this.isThumbnailPath(datPath)
       this.cacheResolvedPaths(cacheKey, payload.imageMd5, payload.imageDatName, outputPath)
       if (!isThumb) {
@@ -209,6 +256,7 @@ export class ImageDecryptService {
       this.emitCacheResolved(payload, cacheKey, localPath)
       return { success: true, localPath, isThumb }
     } catch (e) {
+      this.logError('解密失败', e, { md5: payload.imageMd5, datName: payload.imageDatName })
       return { success: false, error: String(e) }
     }
   }
@@ -233,7 +281,7 @@ export class ImageDecryptService {
           if (this.isAccountDir(entryPath)) return entryPath
         }
       }
-    } catch {}
+    } catch { }
 
     return null
   }
@@ -244,10 +292,10 @@ export class ImageDecryptService {
   private getDecryptedCacheDir(wxid: string): string | null {
     const cachePath = this.configService.get('cachePath')
     if (!cachePath) return null
-    
+
     const cleanedWxid = this.cleanAccountDirName(wxid)
     const cacheAccountDir = join(cachePath, cleanedWxid)
-    
+
     // 检查缓存目录下是否有 hardlink.db
     if (existsSync(join(cacheAccountDir, 'hardlink.db'))) {
       return cacheAccountDir
@@ -312,7 +360,7 @@ export class ImageDecryptService {
       allowThumbnail,
       skipResolvedCache
     })
-    
+
     // 优先通过 hardlink.db 查询
     if (imageMd5) {
       this.logInfo('[ImageDecrypt] hardlink lookup (md5)', { imageMd5, sessionId })
@@ -474,7 +522,7 @@ export class ImageDecryptService {
       if (!hasUpdate) return
       this.updateFlags.set(cacheKey, true)
       this.emitImageUpdate(payload, cacheKey)
-    }).catch(() => {})
+    }).catch(() => { })
   }
 
   private looksLikeMd5(value: string): boolean {
@@ -528,7 +576,7 @@ export class ImageDecryptService {
         this.logInfo('[ImageDecrypt] hardlink row miss', { md5, table: state.imageTable })
         return null
       }
-      
+
       const dir1 = this.getRowValue(row, 'dir1')
       const dir2 = this.getRowValue(row, 'dir2')
       const fileName = this.getRowValue(row, 'file_name') ?? this.getRowValue(row, 'fileName')
@@ -549,7 +597,7 @@ export class ImageDecryptService {
       // dir1 和 dir2 是 rowid，需要从 dir2id 表查询对应的目录名
       let dir1Name: string | null = null
       let dir2Name: string | null = null
-      
+
       if (state.dirTable) {
         try {
           // 通过 rowid 查询目录名
@@ -562,7 +610,7 @@ export class ImageDecryptService {
             const value = this.getRowValue(dir1Result.rows[0], 'username')
             if (value) dir1Name = String(value)
           }
-          
+
           const dir2Result = await wcdbService.execQuery(
             'media',
             hardlinkPath,
@@ -588,14 +636,14 @@ export class ImageDecryptService {
         join(accountDir, 'msg', 'attach', dir1Name, dir2Name, 'mg', fileName),
         join(accountDir, 'msg', 'attach', dir1Name, dir2Name, fileName),
       ]
-      
+
       for (const fullPath of possiblePaths) {
         if (existsSync(fullPath)) {
           this.logInfo('[ImageDecrypt] hardlink path hit', { fullPath })
           return fullPath
         }
       }
-      
+
       this.logInfo('[ImageDecrypt] hardlink path miss', { possiblePaths })
       return null
     } catch {
@@ -829,14 +877,14 @@ export class ImageDecryptService {
         }
       }
     }
-    
+
     // 新目录结构: Images/{normalizedKey}/{normalizedKey}_thumb.jpg 或 _hd.jpg
     const imageDir = join(root, normalizedKey)
     if (existsSync(imageDir)) {
       const hit = this.findCachedOutputInDir(imageDir, normalizedKey, extensions, preferHd)
       if (hit) return hit
     }
-    
+
     // 兼容旧的平铺结构
     for (const ext of extensions) {
       const candidate = join(root, `${cacheKey}${ext}`)
@@ -846,7 +894,7 @@ export class ImageDecryptService {
       const candidate = join(root, `${cacheKey}_t${ext}`)
       if (existsSync(candidate)) return candidate
     }
-    
+
     return null
   }
 
@@ -863,6 +911,8 @@ export class ImageDecryptService {
       }
       const thumbPath = join(dirPath, `${normalizedKey}_thumb${ext}`)
       if (existsSync(thumbPath)) return thumbPath
+
+      // 允许返回 _hd 格式（因为它有 _hd 变体后缀）
       if (!preferHd) {
         const hdPath = join(dirPath, `${normalizedKey}_hd${ext}`)
         if (existsSync(hdPath)) return hdPath
@@ -875,14 +925,14 @@ export class ImageDecryptService {
     const name = basename(datPath)
     const lower = name.toLowerCase()
     const base = lower.endsWith('.dat') ? name.slice(0, -4) : name
-    
+
     // 提取基础名称（去掉 _t, _h 等后缀）
     const normalizedBase = this.normalizeDatBase(base)
-    
+
     // 判断是缩略图还是高清图
     const isThumb = this.isThumbnailDat(lower)
     const suffix = isThumb ? '_thumb' : '_hd'
-    
+
     const contactDir = this.sanitizeDirName(sessionId || 'unknown')
     const timeDir = this.resolveTimeDir(datPath)
     const outputDir = join(this.getCacheRoot(), contactDir, timeDir)
@@ -960,8 +1010,9 @@ export class ImageDecryptService {
       const lower = entry.toLowerCase()
       if (!lower.endsWith('.dat')) continue
       if (this.isThumbnailDat(lower)) continue
-      if (!this.hasXVariant(lower.slice(0, -4))) continue
       const baseLower = lower.slice(0, -4)
+      // 只排除没有 _x 变体后缀的文件（允许 _hd、_h 等所有带变体的）
+      if (!this.hasXVariant(baseLower)) continue
       if (this.normalizeDatBase(baseLower) !== target) continue
       return join(dirPath, entry)
     }
@@ -973,6 +1024,7 @@ export class ImageDecryptService {
     if (!lower.endsWith('.dat')) return false
     if (this.isThumbnailDat(lower)) return false
     const baseLower = lower.slice(0, -4)
+    // 只检查是否有 _x 变体后缀（允许 _hd、_h 等所有带变体的）
     return this.hasXVariant(baseLower)
   }
 
@@ -1079,7 +1131,7 @@ export class ImageDecryptService {
 
   private async decryptDatAuto(datPath: string, xorKey: number, aesKey: Buffer | null): Promise<Buffer> {
     const version = this.getDatVersion(datPath)
-    
+
     if (version === 0) {
       return this.decryptDatV3(datPath, xorKey)
     }
@@ -1136,7 +1188,7 @@ export class ImageDecryptService {
     // 当 aesSize % 16 === 0 时，仍需要额外 16 字节的填充
     const remainder = ((aesSize % 16) + 16) % 16
     const alignedAesSize = aesSize + (16 - remainder)
-    
+
     if (alignedAesSize > data.length) {
       throw new Error('文件格式异常：AES 数据长度超过文件实际长度')
     }
@@ -1147,7 +1199,7 @@ export class ImageDecryptService {
       const decipher = crypto.createDecipheriv('aes-128-ecb', aesKey, null)
       decipher.setAutoPadding(false)
       const decrypted = Buffer.concat([decipher.update(aesData), decipher.final()])
-      
+
       // 使用 PKCS7 填充移除
       unpadded = this.strictRemovePadding(decrypted)
     }
@@ -1214,7 +1266,7 @@ export class ImageDecryptService {
     if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return '.png'
     if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return '.jpg'
     if (buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
-        buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) {
+      buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) {
       return '.webp'
     }
     return null
@@ -1332,10 +1384,10 @@ export class ImageDecryptService {
                 keyCount.set(key, (keyCount.get(key) || 0) + 1)
                 filesChecked++
               }
-            } catch {}
+            } catch { }
           }
         }
-      } catch {}
+      } catch { }
     }
 
     scanDir(dirPath)

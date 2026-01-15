@@ -1,9 +1,10 @@
 import { app } from 'electron'
 import { join, dirname, basename } from 'path'
-import { existsSync, readdirSync, readFileSync, statSync } from 'fs'
+import { existsSync, readdirSync, readFileSync, statSync, copyFileSync, mkdirSync } from 'fs'
 import { execFile, spawn } from 'child_process'
 import { promisify } from 'util'
 import crypto from 'crypto'
+import os from 'os'
 
 const execFileAsync = promisify(execFile)
 
@@ -57,18 +58,94 @@ export class KeyService {
   private readonly ERROR_SUCCESS = 0
 
   private getDllPath(): string {
-    const resourcesPath = app.isPackaged
-      ? join(process.resourcesPath, 'resources')
-      : join(app.getAppPath(), 'resources')
-    return join(resourcesPath, 'wx_key.dll')
+    const isPackaged = typeof app !== 'undefined' && app ? app.isPackaged : process.env.NODE_ENV === 'production'
+
+    // 候选路径列表
+    const candidates: string[] = []
+
+    // 1. 显式环境变量 (最高优先级)
+    if (process.env.WX_KEY_DLL_PATH) {
+      candidates.push(process.env.WX_KEY_DLL_PATH)
+    }
+
+    if (isPackaged) {
+      // 生产环境: 通常在 resources 目录下，但也可能直接在 resources 根目录
+      candidates.push(join(process.resourcesPath, 'resources', 'wx_key.dll'))
+      candidates.push(join(process.resourcesPath, 'wx_key.dll'))
+    } else {
+      // 开发环境
+      const cwd = process.cwd()
+      candidates.push(join(cwd, 'resources', 'wx_key.dll'))
+      candidates.push(join(app.getAppPath(), 'resources', 'wx_key.dll'))
+    }
+
+    // 检查并返回第一个存在的路径
+    for (const path of candidates) {
+      if (existsSync(path)) {
+        return path
+      }
+    }
+
+    // 如果都没找到，返回最可能的路径以便报错信息有参考
+    return candidates[0]
+  }
+
+  // 检查路径是否为 UNC 路径或网络路径
+  private isNetworkPath(path: string): boolean {
+    // UNC 路径以 \\ 开头
+    if (path.startsWith('\\\\')) {
+      return true
+    }
+    // 检查是否为网络映射驱动器（简化检测：A: 表示驱动器）
+    // 注意：这是一个启发式检测，更准确的方式需要调用 GetDriveType Windows API
+    // 但对于大多数 VM 共享场景，UNC 路径检测已足够
+    return false
+  }
+
+  // 将 DLL 复制到本地临时目录
+  private localizeNetworkDll(originalPath: string): string {
+    try {
+      const tempDir = join(os.tmpdir(), 'weflow_dll_cache')
+      if (!existsSync(tempDir)) {
+        mkdirSync(tempDir, { recursive: true })
+      }
+      const localPath = join(tempDir, 'wx_key.dll')
+
+      // 检查是否已经有本地副本，如果有就使用它
+      if (existsSync(localPath)) {
+        console.log(`使用已存在的 DLL 本地副本: ${localPath}`)
+        return localPath
+      }
+
+      console.log(`检测到网络路径 DLL，正在复制到本地: ${originalPath} -> ${localPath}`)
+      copyFileSync(originalPath, localPath)
+      console.log('DLL 本地化成功')
+      return localPath
+    } catch (e) {
+      console.error('DLL 本地化失败:', e)
+      // 如果本地化失败，返回原路径
+      return originalPath
+    }
   }
 
   private ensureLoaded(): boolean {
     if (this.initialized) return true
+
+    let dllPath = ''
     try {
       this.koffi = require('koffi')
-      const dllPath = this.getDllPath()
-      if (!existsSync(dllPath)) return false
+      dllPath = this.getDllPath()
+
+      if (!existsSync(dllPath)) {
+        console.error(`wx_key.dll 不存在于路径: ${dllPath}`)
+        return false
+      }
+
+      // 检查是否为网络路径，如果是则本地化
+      if (this.isNetworkPath(dllPath)) {
+        console.log('检测到网络路径，将进行本地化处理')
+        dllPath = this.localizeNetworkDll(dllPath)
+      }
 
       this.lib = this.koffi.load(dllPath)
       this.initHook = this.lib.func('bool InitializeHook(uint32 targetPid)')
@@ -80,7 +157,14 @@ export class KeyService {
       this.initialized = true
       return true
     } catch (e) {
-      console.error('加载 wx_key.dll 失败:', e)
+      const errorMsg = e instanceof Error ? e.message : String(e)
+      const errorStack = e instanceof Error ? e.stack : ''
+      console.error(`加载 wx_key.dll 失败`)
+      console.error(`  路径: ${dllPath}`)
+      console.error(`  错误: ${errorMsg}`)
+      if (errorStack) {
+        console.error(`  堆栈: ${errorStack}`)
+      }
       return false
     }
   }
@@ -831,17 +915,40 @@ export class KeyService {
     return buffer.subarray(0, bytesRead[0])
   }
 
-  private async getAesKeyFromMemory(pid: number, ciphertext: Buffer): Promise<string | null> {
+  private async getAesKeyFromMemory(
+    pid: number,
+    ciphertext: Buffer,
+    onProgress?: (current: number, total: number, message: string) => void
+  ): Promise<string | null> {
     if (!this.ensureKernel32()) return null
     const hProcess = this.OpenProcess(this.PROCESS_ALL_ACCESS, false, pid)
     if (!hProcess) return null
 
     try {
-      const regions = this.getMemoryRegions(hProcess)
-      const chunkSize = 4 * 1024 * 1024
+      const allRegions = this.getMemoryRegions(hProcess)
+
+      // 优化1: 只保留小内存区域（< 10MB）- 密钥通常在小区域，可大幅减少扫描时间
+      const filteredRegions = allRegions.filter(([_, size]) => size <= 10 * 1024 * 1024)
+
+      // 优化2: 优先级排序 - 按大小升序，先扫描小区域（密钥通常在较小区域）
+      const sortedRegions = filteredRegions.sort((a, b) => a[1] - b[1])
+
+      // 优化3: 计算总字节数用于精确进度报告
+      const totalBytes = sortedRegions.reduce((sum, [_, size]) => sum + size, 0)
+      let processedBytes = 0
+
+      // 优化4: 减小分块大小到 1MB（参考 wx_key 项目）
+      const chunkSize = 1 * 1024 * 1024
       const overlap = 65
-      for (const [baseAddress, regionSize] of regions) {
-        if (regionSize > 100 * 1024 * 1024) continue
+      let currentRegion = 0
+
+      for (const [baseAddress, regionSize] of sortedRegions) {
+        currentRegion++
+        const progress = totalBytes > 0 ? Math.floor((processedBytes / totalBytes) * 100) : 0
+        onProgress?.(progress, 100, `扫描内存 ${progress}% (${currentRegion}/${sortedRegions.length})`)
+
+        // 每个区域都让出主线程，确保UI流畅
+        await new Promise(resolve => setImmediate(resolve))
         let offset = 0
         let trailing: Buffer | null = null
         while (offset < regionSize) {
@@ -896,6 +1003,9 @@ export class KeyService {
           trailing = dataToScan.subarray(start < 0 ? 0 : start)
           offset += currentChunkSize
         }
+
+        // 更新已处理字节数
+        processedBytes += regionSize
       }
       return null
     } finally {
@@ -933,7 +1043,9 @@ export class KeyService {
     if (!pid) return { success: false, error: '未检测到微信进程' }
 
     onProgress?.('正在扫描内存获取 AES 密钥...')
-    const aesKey = await this.getAesKeyFromMemory(pid, ciphertext)
+    const aesKey = await this.getAesKeyFromMemory(pid, ciphertext, (current, total, msg) => {
+      onProgress?.(`${msg} (${current}/${total})`)
+    })
     if (!aesKey) {
       return {
         success: false,

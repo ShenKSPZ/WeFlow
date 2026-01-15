@@ -69,7 +69,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('wcdb:testConnection', dbPath, hexKey, wxid),
     open: (dbPath: string, hexKey: string, wxid: string) =>
       ipcRenderer.invoke('wcdb:open', dbPath, hexKey, wxid),
-    close: () => ipcRenderer.invoke('wcdb:close')
+    close: () => ipcRenderer.invoke('wcdb:close'),
+
   },
 
   // 密钥获取
@@ -101,11 +102,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getContactAvatar: (username: string) => ipcRenderer.invoke('chat:getContactAvatar', username),
     getMyAvatarUrl: () => ipcRenderer.invoke('chat:getMyAvatarUrl'),
     downloadEmoji: (cdnUrl: string, md5?: string) => ipcRenderer.invoke('chat:downloadEmoji', cdnUrl, md5),
+    getCachedMessages: (sessionId: string) => ipcRenderer.invoke('chat:getCachedMessages', sessionId),
     close: () => ipcRenderer.invoke('chat:close'),
     getSessionDetail: (sessionId: string) => ipcRenderer.invoke('chat:getSessionDetail', sessionId),
     getImageData: (sessionId: string, msgId: string) => ipcRenderer.invoke('chat:getImageData', sessionId, msgId),
     getVoiceData: (sessionId: string, msgId: string) => ipcRenderer.invoke('chat:getVoiceData', sessionId, msgId)
   },
+
+
 
   // 图片解密
   image: {

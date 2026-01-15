@@ -181,6 +181,8 @@ class GroupAnalyticsService {
     }
   }
 
+
+
   async getGroupActiveHours(chatroomId: string, startTime?: number, endTime?: number): Promise<{ success: boolean; data?: GroupActiveHours; error?: string }> {
     try {
       const conn = await this.ensureConnected()

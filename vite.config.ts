@@ -10,6 +10,14 @@ export default defineConfig({
     port: 3000,
     strictPort: false  // 如果3000被占用，自动尝试下一个
   },
+  build: {
+    commonjsOptions: {
+      ignoreDynamicRequires: true
+    }
+  },
+  optimizeDeps: {
+    exclude: []
+  },
   plugins: [
     react(),
     electron([
@@ -19,7 +27,11 @@ export default defineConfig({
           build: {
             outDir: 'dist-electron',
             rollupOptions: {
-              external: ['better-sqlite3', 'koffi']
+              external: [
+                'better-sqlite3',
+                'koffi',
+                'fsevents'
+              ]
             }
           }
         }
@@ -30,7 +42,10 @@ export default defineConfig({
           build: {
             outDir: 'dist-electron',
             rollupOptions: {
-              external: ['koffi'],
+              external: [
+                'koffi',
+                'fsevents'
+              ],
               output: {
                 entryFileNames: 'annualReportWorker.js',
                 inlineDynamicImports: true
@@ -47,6 +62,25 @@ export default defineConfig({
             rollupOptions: {
               output: {
                 entryFileNames: 'imageSearchWorker.js',
+                inlineDynamicImports: true
+              }
+            }
+          }
+        }
+      },
+      {
+        entry: 'electron/wcdbWorker.ts',
+        vite: {
+          build: {
+            outDir: 'dist-electron',
+            rollupOptions: {
+              external: [
+                'better-sqlite3',
+                'koffi',
+                'fsevents'
+              ],
+              output: {
+                entryFileNames: 'wcdbWorker.js',
                 inlineDynamicImports: true
               }
             }

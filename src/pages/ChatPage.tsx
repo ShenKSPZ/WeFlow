@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { Search, MessageSquare, AlertCircle, Loader2, RefreshCw, X, ChevronDown, Info, Calendar, Database, Hash, Play, Pause, Image as ImageIcon } from 'lucide-react'
+import { createPortal } from 'react-dom'
 import { useChatStore } from '../stores/chatStore'
 import type { ChatSession, Message } from '../types/models'
 import { getEmojiPath } from 'wechat-emojis'
@@ -23,65 +24,10 @@ interface SessionDetail {
   messageTables: { dbName: string; tableName: string; count: number }[]
 }
 
-// 全局头像加载队列管理器（限制并发，避免卡顿）
-class AvatarLoadQueue {
-  private queue: Array<{ url: string; resolve: () => void; reject: () => void }> = []
-  private loading = new Set<string>()
-  private readonly maxConcurrent = 1 // 一次只加载1个头像，避免卡顿
-  private readonly delayBetweenBatches = 100 // 批次间延迟100ms，给UI喘息时间
-
-  async enqueue(url: string): Promise<void> {
-    // 如果已经在加载中，直接返回
-    if (this.loading.has(url)) {
-      return Promise.resolve()
-    }
-
-    return new Promise((resolve, reject) => {
-      this.queue.push({ url, resolve, reject })
-      this.processQueue()
-    })
-  }
-
-  private async processQueue() {
-    // 如果已达到最大并发数，等待
-    if (this.loading.size >= this.maxConcurrent) {
-      return
-    }
-
-    // 如果队列为空，返回
-    if (this.queue.length === 0) {
-      return
-    }
-
-    // 取出一个任务
-    const task = this.queue.shift()
-    if (!task) return
-
-    this.loading.add(task.url)
-
-    // 加载图片
-    const img = new Image()
-    img.onload = () => {
-      this.loading.delete(task.url)
-      task.resolve()
-      // 延迟一下再处理下一个，避免一次性加载太多
-      setTimeout(() => this.processQueue(), this.delayBetweenBatches)
-    }
-    img.onerror = () => {
-      this.loading.delete(task.url)
-      task.reject()
-      setTimeout(() => this.processQueue(), this.delayBetweenBatches)
-    }
-    img.src = task.url
-  }
-
-  clear() {
-    this.queue = []
-    this.loading.clear()
-  }
-}
-
-const avatarLoadQueue = new AvatarLoadQueue()
+// 全局头像加载队列管理器已移至 src/utils/AvatarLoadQueue.ts
+// 全局头像加载队列管理器已移至 src/utils/AvatarLoadQueue.ts
+import { avatarLoadQueue } from '../utils/AvatarLoadQueue'
+import { Avatar } from '../components/Avatar'
 
 // 头像组件 - 支持骨架屏加载和懒加载（优化：限制并发，使用 memo 避免不必要的重渲染）
 // 会话项组件（使用 memo 优化，避免不必要的重渲染）
@@ -97,7 +43,7 @@ const SessionItem = React.memo(function SessionItem({
   formatTime: (timestamp: number) => string
 }) {
   // 缓存格式化的时间
-  const timeText = useMemo(() => 
+  const timeText = useMemo(() =>
     formatTime(session.lastTimestamp || session.sortTimestamp),
     [formatTime, session.lastTimestamp, session.sortTimestamp]
   )
@@ -107,7 +53,12 @@ const SessionItem = React.memo(function SessionItem({
       className={`session-item ${isActive ? 'active' : ''}`}
       onClick={() => onSelect(session)}
     >
-      <SessionAvatar session={session} size={48} />
+      <Avatar
+        src={session.avatarUrl}
+        name={session.displayName || session.username}
+        size={48}
+        className={session.username.includes('@chatroom') ? 'group' : ''}
+      />
       <div className="session-info">
         <div className="session-top">
           <span className="session-name">{session.displayName || session.username}</span>
@@ -138,109 +89,7 @@ const SessionItem = React.memo(function SessionItem({
   )
 })
 
-const SessionAvatar = React.memo(function SessionAvatar({ session, size = 48 }: { session: ChatSession; size?: number }) {
-  const [imageLoaded, setImageLoaded] = useState(false)
-  const [imageError, setImageError] = useState(false)
-  const [shouldLoad, setShouldLoad] = useState(false)
-  const [isInQueue, setIsInQueue] = useState(false)
-  const imgRef = useRef<HTMLImageElement>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
-  const isGroup = session.username.includes('@chatroom')
 
-  const getAvatarLetter = (): string => {
-    const name = session.displayName || session.username
-    if (!name) return '?'
-    const chars = [...name]
-    return chars[0] || '?'
-  }
-
-  // 使用 Intersection Observer 实现懒加载（优化性能）
-  useEffect(() => {
-    if (!containerRef.current || shouldLoad || isInQueue) return
-    if (!session.avatarUrl) {
-      // 没有头像URL，不需要加载
-      return
-    }
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting && !isInQueue) {
-            // 加入加载队列，而不是立即加载
-            setIsInQueue(true)
-            avatarLoadQueue.enqueue(session.avatarUrl!).then(() => {
-              setShouldLoad(true)
-            }).catch(() => {
-              setImageError(true)
-            }).finally(() => {
-              setIsInQueue(false)
-            })
-            observer.disconnect()
-          }
-        })
-      },
-      {
-        rootMargin: '50px' // 减少预加载距离，只提前50px
-      }
-    )
-
-    observer.observe(containerRef.current)
-
-    return () => {
-      observer.disconnect()
-    }
-  }, [session.avatarUrl, shouldLoad, isInQueue])
-
-  // 当 avatarUrl 变化时重置状态
-  useEffect(() => {
-    setImageLoaded(false)
-    setImageError(false)
-    setShouldLoad(false)
-    setIsInQueue(false)
-  }, [session.avatarUrl])
-
-  // 检查图片是否已经从缓存加载完成
-  useEffect(() => {
-    if (shouldLoad && imgRef.current?.complete && imgRef.current?.naturalWidth > 0) {
-      setImageLoaded(true)
-    }
-  }, [session.avatarUrl, shouldLoad])
-
-  const hasValidUrl = session.avatarUrl && !imageError && shouldLoad
-
-  return (
-    <div
-      ref={containerRef}
-      className={`session-avatar ${isGroup ? 'group' : ''} ${hasValidUrl && !imageLoaded ? 'loading' : ''}`}
-      style={{ width: size, height: size }}
-    >
-      {hasValidUrl ? (
-        <>
-          {!imageLoaded && <div className="avatar-skeleton" />}
-          <img
-            ref={imgRef}
-            src={session.avatarUrl}
-            alt=""
-            className={imageLoaded ? 'loaded' : ''}
-            onLoad={() => setImageLoaded(true)}
-            onError={() => setImageError(true)}
-            loading="lazy"
-          />
-        </>
-      ) : (
-        <span className="avatar-letter">{getAvatarLetter()}</span>
-      )}
-    </div>
-  )
-}, (prevProps, nextProps) => {
-  // 自定义比较函数，只在关键属性变化时重渲染
-  return (
-    prevProps.session.username === nextProps.session.username &&
-    prevProps.session.displayName === nextProps.session.displayName &&
-    prevProps.session.avatarUrl === nextProps.session.avatarUrl &&
-    prevProps.size === nextProps.size
-  )
-})
 
 function ChatPage(_props: ChatPageProps) {
   const {
@@ -278,6 +127,7 @@ function ChatPage(_props: ChatPageProps) {
   const sessionListRef = useRef<HTMLDivElement>(null)
   const [currentOffset, setCurrentOffset] = useState(0)
   const [myAvatarUrl, setMyAvatarUrl] = useState<string | undefined>(undefined)
+  const [myWxid, setMyWxid] = useState<string | undefined>(undefined)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const [sidebarWidth, setSidebarWidth] = useState(260)
   const [isResizing, setIsResizing] = useState(false)
@@ -287,7 +137,7 @@ function ChatPage(_props: ChatPageProps) {
   const [highlightedMessageKeys, setHighlightedMessageKeys] = useState<string[]>([])
   const [isRefreshingSessions, setIsRefreshingSessions] = useState(false)
   const [hasInitialMessages, setHasInitialMessages] = useState(false)
-  
+
   // 联系人信息加载控制
   const isEnrichingRef = useRef(false)
   const enrichCancelledRef = useRef(false)
@@ -354,6 +204,9 @@ function ChatPage(_props: ChatPageProps) {
         setConnected(true)
         await loadSessions()
         await loadMyAvatar()
+        // 获取 myWxid 用于匹配个人头像
+        const wxid = await window.electronAPI.config.get('myWxid')
+        if (wxid) setMyWxid(wxid as string)
       } else {
         setConnectionError(result.error || '连接失败')
       }
@@ -380,10 +233,8 @@ function ChatPage(_props: ChatPageProps) {
         // 确保 nextSessions 也是数组
         if (Array.isArray(nextSessions)) {
           setSessions(nextSessions)
-          // 延迟启动联系人信息加载，确保UI先渲染完成
-          setTimeout(() => {
-            void enrichSessionsContactInfo(nextSessions)
-          }, 500)
+          // 立即启动联系人信息加载，不再延迟 500ms
+          void enrichSessionsContactInfo(nextSessions)
         } else {
           console.error('mergeSessions returned non-array:', nextSessions)
           setSessions(sessionsArray)
@@ -407,31 +258,30 @@ function ChatPage(_props: ChatPageProps) {
   // 分批异步加载联系人信息（优化性能：防止重复加载，滚动时暂停，只在空闲时加载）
   const enrichSessionsContactInfo = async (sessions: ChatSession[]) => {
     if (sessions.length === 0) return
-    
+
     // 防止重复加载
     if (isEnrichingRef.current) {
       console.log('[性能监控] 联系人信息正在加载中，跳过重复请求')
       return
     }
-    
+
     isEnrichingRef.current = true
     enrichCancelledRef.current = false
-    
+
     console.log(`[性能监控] 开始加载联系人信息，会话数: ${sessions.length}`)
     const totalStart = performance.now()
-    
-    // 延迟启动，等待UI渲染完成
-    await new Promise(resolve => setTimeout(resolve, 500))
-    
+
+    // 移除初始 500ms 延迟，让后台加载与 UI 渲染并行
+
     // 检查是否被取消
     if (enrichCancelledRef.current) {
       isEnrichingRef.current = false
       return
     }
-    
+
     try {
-      // 找出需要加载联系人信息的会话（没有缓存的）
-      const needEnrich = sessions.filter(s => !s.avatarUrl && (!s.displayName || s.displayName === s.username))
+      // 找出需要加载联系人信息的会话（没有头像或者没有显示名称的）
+      const needEnrich = sessions.filter(s => !s.avatarUrl || !s.displayName || s.displayName === s.username)
       if (needEnrich.length === 0) {
         console.log('[性能监控] 所有联系人信息已缓存，跳过加载')
         isEnrichingRef.current = false
@@ -443,7 +293,7 @@ function ChatPage(_props: ChatPageProps) {
       // 进一步减少批次大小，每批3个，避免DLL调用阻塞
       const batchSize = 3
       let loadedCount = 0
-      
+
       for (let i = 0; i < needEnrich.length; i += batchSize) {
         // 如果正在滚动，暂停加载
         if (isScrollingRef.current) {
@@ -454,14 +304,14 @@ function ChatPage(_props: ChatPageProps) {
           }
           if (enrichCancelledRef.current) break
         }
-        
+
         // 检查是否被取消
         if (enrichCancelledRef.current) break
-        
+
         const batchStart = performance.now()
         const batch = needEnrich.slice(i, i + batchSize)
         const usernames = batch.map(s => s.username)
-        
+
         // 使用 requestIdleCallback 延迟执行，避免阻塞UI
         await new Promise<void>((resolve) => {
           if ('requestIdleCallback' in window) {
@@ -474,13 +324,13 @@ function ChatPage(_props: ChatPageProps) {
             }, 300)
           }
         })
-        
+
         loadedCount += batch.length
         const batchTime = performance.now() - batchStart
         if (batchTime > 200) {
           console.warn(`[性能监控] 批次 ${Math.floor(i / batchSize) + 1}/${Math.ceil(needEnrich.length / batchSize)} 耗时: ${batchTime.toFixed(2)}ms (已加载: ${loadedCount}/${needEnrich.length})`)
         }
-        
+
         // 批次间延迟，给UI更多时间（DLL调用可能阻塞，需要更长的延迟）
         if (i + batchSize < needEnrich.length && !enrichCancelledRef.current) {
           // 如果不在滚动，可以延迟短一点
@@ -488,7 +338,7 @@ function ChatPage(_props: ChatPageProps) {
           await new Promise(resolve => setTimeout(resolve, delay))
         }
       }
-      
+
       const totalTime = performance.now() - totalStart
       if (!enrichCancelledRef.current) {
         console.log(`[性能监控] 联系人信息加载完成，总耗时: ${totalTime.toFixed(2)}ms, 已加载: ${loadedCount}/${needEnrich.length}`)
@@ -570,23 +420,35 @@ function ChatPage(_props: ChatPageProps) {
     try {
       // 在 DLL 调用前让出控制权（使用 setTimeout 0 代替 setImmediate）
       await new Promise(resolve => setTimeout(resolve, 0))
-      
+
       const dllStart = performance.now()
       const result = await window.electronAPI.chat.enrichSessionsContactInfo(usernames)
       const dllTime = performance.now() - dllStart
-      
+
       // DLL 调用后再次让出控制权
       await new Promise(resolve => setTimeout(resolve, 0))
-      
+
       const totalTime = performance.now() - startTime
       if (dllTime > 50 || totalTime > 100) {
         console.warn(`[性能监控] DLL调用耗时: ${dllTime.toFixed(2)}ms, 总耗时: ${totalTime.toFixed(2)}ms, usernames: ${usernames.length}`)
       }
-      
+
       if (result.success && result.contacts) {
-        // 将更新加入队列，而不是立即更新
+        // 将更新加入队列，用于侧边栏更新
         for (const [username, contact] of Object.entries(result.contacts)) {
           contactUpdateQueueRef.current.set(username, contact)
+
+          // 如果是自己的信息且当前个人头像为空，同步更新
+          if (myWxid && username === myWxid && contact.avatarUrl && !myAvatarUrl) {
+            console.log('[ChatPage] 从联系人同步获取到个人头像')
+            setMyAvatarUrl(contact.avatarUrl)
+          }
+
+          // 【核心优化】同步更新全局发送者头像缓存，供 MessageBubble 使用
+          senderAvatarCache.set(username, {
+            avatarUrl: contact.avatarUrl,
+            displayName: contact.displayName
+          })
         }
         // 触发批量更新
         flushContactUpdates()
@@ -644,7 +506,7 @@ function ChatPage(_props: ChatPageProps) {
     const session = sessionMapRef.current.get(sessionId)
     const unreadCount = session?.unreadCount ?? 0
     const messageLimit = offset === 0 && unreadCount > 99 ? 30 : 50
-    
+
     if (offset === 0) {
       setLoadingMessages(true)
       setMessages([])
@@ -660,6 +522,31 @@ function ChatPage(_props: ChatPageProps) {
       if (result.success && result.messages) {
         if (offset === 0) {
           setMessages(result.messages)
+
+          // 预取发送者信息：在关闭加载遮罩前处理
+          const unreadCount = session?.unreadCount ?? 0
+          const isGroup = sessionId.includes('@chatroom')
+          if (isGroup && result.messages.length > 0) {
+            const unknownSenders = [...new Set(result.messages
+              .filter(m => m.isSend !== 1 && m.senderUsername && !senderAvatarCache.has(m.senderUsername))
+              .map(m => m.senderUsername as string)
+            )]
+            if (unknownSenders.length > 0) {
+              console.log(`[性能监控] 预取消息发送者信息: ${unknownSenders.length} 个`)
+              // 在批量请求前，先将这些发送者标记为加载中，防止 MessageBubble 触发重复请求
+              const batchPromise = loadContactInfoBatch(unknownSenders)
+              unknownSenders.forEach(username => {
+                if (!senderAvatarLoading.has(username)) {
+                  senderAvatarLoading.set(username, batchPromise.then(() => senderAvatarCache.get(username) || null))
+                }
+              })
+              // 确保在请求完成后清理 loading 状态
+              batchPromise.finally(() => {
+                unknownSenders.forEach(username => senderAvatarLoading.delete(username))
+              })
+            }
+          }
+
           // 首次加载滚动到底部
           requestAnimationFrame(() => {
             if (messageListRef.current) {
@@ -668,6 +555,27 @@ function ChatPage(_props: ChatPageProps) {
           })
         } else {
           appendMessages(result.messages, true)
+
+          // 加载更多也同样处理发送者信息预取
+          const isGroup = sessionId.includes('@chatroom')
+          if (isGroup) {
+            const unknownSenders = [...new Set(result.messages
+              .filter(m => m.isSend !== 1 && m.senderUsername && !senderAvatarCache.has(m.senderUsername))
+              .map(m => m.senderUsername as string)
+            )]
+            if (unknownSenders.length > 0) {
+              const batchPromise = loadContactInfoBatch(unknownSenders)
+              unknownSenders.forEach(username => {
+                if (!senderAvatarLoading.has(username)) {
+                  senderAvatarLoading.set(username, batchPromise.then(() => senderAvatarCache.get(username) || null))
+                }
+              })
+              batchPromise.finally(() => {
+                unknownSenders.forEach(username => senderAvatarLoading.delete(username))
+              })
+            }
+          }
+
           // 加载更多后保持位置：让之前的第一条消息保持在原来的视觉位置
           if (firstMsgEl && listEl) {
             requestAnimationFrame(() => {
@@ -742,7 +650,7 @@ function ChatPage(_props: ChatPageProps) {
 
     scrollTimeoutRef.current = requestAnimationFrame(() => {
       if (!messageListRef.current) return
-      
+
       const { scrollTop, clientHeight, scrollHeight } = messageListRef.current
 
       // 显示回到底部按钮：距离底部超过 300px
@@ -842,7 +750,7 @@ function ChatPage(_props: ChatPageProps) {
     if (!isConnected && !isConnecting) {
       connect()
     }
-    
+
     // 组件卸载时清理
     return () => {
       avatarLoadQueue.clear()
@@ -906,7 +814,7 @@ function ChatPage(_props: ChatPageProps) {
       })
     }
     if (payloads.length > 0) {
-      window.electronAPI.image.preload(payloads).catch(() => {})
+      window.electronAPI.image.preload(payloads).catch(() => { })
     }
   }, [currentSessionId, messages])
 
@@ -1101,8 +1009,10 @@ function ChatPage(_props: ChatPageProps) {
           </div>
         )}
 
+        {/* ... (previous content) ... */}
         {isLoadingSessions ? (
           <div className="loading-sessions">
+            {/* ... (skeleton items) ... */}
             {[1, 2, 3, 4, 5].map(i => (
               <div key={i} className="skeleton-item">
                 <div className="skeleton-avatar" />
@@ -1114,16 +1024,14 @@ function ChatPage(_props: ChatPageProps) {
             ))}
           </div>
         ) : Array.isArray(filteredSessions) && filteredSessions.length > 0 ? (
-          <div 
+          <div
             className="session-list"
             ref={sessionListRef}
             onScroll={() => {
-              // 标记正在滚动，暂停联系人信息加载
               isScrollingRef.current = true
               if (sessionScrollTimeoutRef.current) {
                 clearTimeout(sessionScrollTimeoutRef.current)
               }
-              // 滚动结束后200ms才认为滚动停止
               sessionScrollTimeoutRef.current = window.setTimeout(() => {
                 isScrollingRef.current = false
                 sessionScrollTimeoutRef.current = null
@@ -1147,6 +1055,8 @@ function ChatPage(_props: ChatPageProps) {
             <p className="hint">请先在数据管理页面解密数据库</p>
           </div>
         )}
+
+
       </div>
 
       {/* 拖动调节条 */}
@@ -1157,7 +1067,12 @@ function ChatPage(_props: ChatPageProps) {
         {currentSession ? (
           <>
             <div className="message-header">
-              <SessionAvatar session={currentSession} size={40} />
+              <Avatar
+                src={currentSession.avatarUrl}
+                name={currentSession.displayName || currentSession.username}
+                size={40}
+                className={isGroupChat(currentSession.username) ? 'group session-avatar' : 'session-avatar'}
+              />
               <div className="header-info">
                 <h3>{currentSession.displayName || currentSession.username}</h3>
                 {isGroupChat(currentSession.username) && (
@@ -1195,56 +1110,56 @@ function ChatPage(_props: ChatPageProps) {
                 ref={messageListRef}
                 onScroll={handleScroll}
               >
-                  {hasMoreMessages && (
-                    <div className={`load-more-trigger ${isLoadingMore ? 'loading' : ''}`}>
-                      {isLoadingMore ? (
-                        <>
-                          <Loader2 size={14} />
-                          <span>加载更多...</span>
-                        </>
-                      ) : (
-                        <span>向上滚动加载更多</span>
-                      )}
-                    </div>
-                  )}
-
-                  {messages.map((msg, index) => {
-                    const prevMsg = index > 0 ? messages[index - 1] : undefined
-                    const showDateDivider = shouldShowDateDivider(msg, prevMsg)
-
-                    // 显示时间：第一条消息，或者与上一条消息间隔超过5分钟
-                    const showTime = !prevMsg || (msg.createTime - prevMsg.createTime > 300)
-                    const isSent = msg.isSend === 1
-                    const isSystem = msg.localType === 10000
-
-                    // 系统消息居中显示
-                    const wrapperClass = isSystem ? 'system' : (isSent ? 'sent' : 'received')
-
-                    const messageKey = getMessageKey(msg)
-                    return (
-                      <div key={messageKey} className={`message-wrapper ${wrapperClass} ${highlightedMessageSet.has(messageKey) ? 'new-message' : ''}`}>
-                        {showDateDivider && (
-                          <div className="date-divider">
-                            <span>{formatDateDivider(msg.createTime)}</span>
-                          </div>
-                        )}
-                        <MessageBubble
-                          message={msg}
-                          session={currentSession}
-                          showTime={!showDateDivider && showTime}
-                          myAvatarUrl={myAvatarUrl}
-                          isGroupChat={isGroupChat(currentSession.username)}
-                        />
-                      </div>
-                    )
-                  })}
-
-                  {/* 回到底部按钮 */}
-                  <div className={`scroll-to-bottom ${showScrollToBottom ? 'show' : ''}`} onClick={scrollToBottom}>
-                    <ChevronDown size={16} />
-                    <span>回到底部</span>
+                {hasMoreMessages && (
+                  <div className={`load-more-trigger ${isLoadingMore ? 'loading' : ''}`}>
+                    {isLoadingMore ? (
+                      <>
+                        <Loader2 size={14} />
+                        <span>加载更多...</span>
+                      </>
+                    ) : (
+                      <span>向上滚动加载更多</span>
+                    )}
                   </div>
+                )}
+
+                {messages.map((msg, index) => {
+                  const prevMsg = index > 0 ? messages[index - 1] : undefined
+                  const showDateDivider = shouldShowDateDivider(msg, prevMsg)
+
+                  // 显示时间：第一条消息，或者与上一条消息间隔超过5分钟
+                  const showTime = !prevMsg || (msg.createTime - prevMsg.createTime > 300)
+                  const isSent = msg.isSend === 1
+                  const isSystem = msg.localType === 10000
+
+                  // 系统消息居中显示
+                  const wrapperClass = isSystem ? 'system' : (isSent ? 'sent' : 'received')
+
+                  const messageKey = getMessageKey(msg)
+                  return (
+                    <div key={messageKey} className={`message-wrapper ${wrapperClass} ${highlightedMessageSet.has(messageKey) ? 'new-message' : ''}`}>
+                      {showDateDivider && (
+                        <div className="date-divider">
+                          <span>{formatDateDivider(msg.createTime)}</span>
+                        </div>
+                      )}
+                      <MessageBubble
+                        message={msg}
+                        session={currentSession}
+                        showTime={!showDateDivider && showTime}
+                        myAvatarUrl={myAvatarUrl}
+                        isGroupChat={isGroupChat(currentSession.username)}
+                      />
+                    </div>
+                  )
+                })}
+
+                {/* 回到底部按钮 */}
+                <div className={`scroll-to-bottom ${showScrollToBottom ? 'show' : ''}`} onClick={scrollToBottom}>
+                  <ChevronDown size={16} />
+                  <span>回到底部</span>
                 </div>
+              </div>
 
               {/* 会话详情面板 */}
               {showDetailPanel && (
@@ -1436,7 +1351,7 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat }:
         bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) {
         return 'image/webp'
       }
-    } catch {}
+    } catch { }
     return 'image/jpeg'
   }, [])
 
@@ -1475,9 +1390,9 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat }:
     })
   }
 
-  // 群聊中获取发送者信息
+  // 群聊中获取发送者信息 (如果自己发的没头像，也尝试拉取)
   useEffect(() => {
-    if (isGroupChat && !isSent && message.senderUsername) {
+    if (message.senderUsername && (isGroupChat || (isSent && !myAvatarUrl))) {
       const sender = message.senderUsername
       const cached = senderAvatarCache.get(sender)
       if (cached) {
@@ -1503,11 +1418,11 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat }:
           setSenderAvatarUrl(result.avatarUrl)
           setSenderName(result.displayName)
         }
-      }).catch(() => {}).finally(() => {
+      }).catch(() => { }).finally(() => {
         senderAvatarLoading.delete(sender)
       })
     }
-  }, [isGroupChat, isSent, message.senderUsername])
+  }, [isGroupChat, isSent, message.senderUsername, myAvatarUrl])
 
   // 自动下载表情包
   useEffect(() => {
@@ -1599,7 +1514,7 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat }:
         }
         setImageHasUpdate(Boolean(result.hasUpdate))
       }
-    }).catch(() => {})
+    }).catch(() => { })
     return () => {
       cancelled = true
     }
@@ -1674,11 +1589,11 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat }:
   const bubbleClass = isSent ? 'sent' : 'received'
 
   // 头像逻辑：
-  // - 自己发的：使用 myAvatarUrl
+  // - 自己发的：优先使用 myAvatarUrl，缺失则用 senderAvatarUrl (补救)
   // - 群聊中对方发的：使用发送者头像
   // - 私聊中对方发的：使用会话头像
   const avatarUrl = isSent
-    ? myAvatarUrl
+    ? (myAvatarUrl || senderAvatarUrl)
     : (isGroupChat ? senderAvatarUrl : session.avatarUrl)
   const avatarLetter = isSent
     ? '我'
@@ -1686,6 +1601,12 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat }:
 
   // 是否有引用消息
   const hasQuote = message.quotedContent && message.quotedContent.length > 0
+
+  // 去除企业微信 ID 前缀
+  const cleanMessageContent = (content: string) => {
+    if (!content) return ''
+    return content.replace(/^[a-zA-Z0-9]+@openim:\n?/, '')
+  }
 
   // 解析混合文本和表情
   const renderTextWithEmoji = (text: string) => {
@@ -1763,13 +1684,14 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat }:
               </button>
             )}
           </div>
-          {showImagePreview && (
+          {showImagePreview && createPortal(
             <div className="image-preview-overlay" onClick={() => setShowImagePreview(false)}>
               <img src={imageLocalPath} alt="图片预览" onClick={(e) => e.stopPropagation()} />
               <button className="image-preview-close" onClick={() => setShowImagePreview(false)}>
                 <X size={16} />
               </button>
-            </div>
+            </div>,
+            document.body
           )}
         </>
       )
@@ -1897,9 +1819,9 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat }:
         <div className="bubble-content">
           <div className="quoted-message">
             {message.quotedSender && <span className="quoted-sender">{message.quotedSender}</span>}
-            <span className="quoted-text">{renderTextWithEmoji(message.quotedContent || '')}</span>
+            <span className="quoted-text">{renderTextWithEmoji(cleanMessageContent(message.quotedContent || ''))}</span>
           </div>
-          <div className="message-text">{renderTextWithEmoji(message.parsedContent)}</div>
+          <div className="message-text">{renderTextWithEmoji(cleanMessageContent(message.parsedContent))}</div>
         </div>
       )
     }
@@ -1916,10 +1838,7 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat }:
     }
 
     // 普通消息
-    return <div className="bubble-content">
-        {renderTextWithEmoji(message.parsedContent)}
-        <div style={{ display: message.localType !== 1 ? 'block' : 'none' }} className="local-type">{message.localType}</div>
-      </div>
+    return <div className="bubble-content">{renderTextWithEmoji(cleanMessageContent(message.parsedContent))}</div>
   }
 
   return (
@@ -1931,11 +1850,15 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat }:
       )}
       <div className={`message-bubble ${bubbleClass} ${isEmoji && message.emojiCdnUrl && !emojiError ? 'emoji' : ''} ${isImage ? 'image' : ''} ${isVoice ? 'voice' : ''}`}>
         <div className="bubble-avatar">
-          {avatarUrl ? (
-            <img src={avatarUrl} alt="" />
-          ) : (
-            <span className="avatar-letter">{avatarLetter}</span>
-          )}
+          <Avatar
+            src={avatarUrl}
+            name={!isSent ? (isGroupChat ? (senderName || message.senderUsername || '?') : (session.displayName || session.username)) : '我'}
+            size={36}
+            className="bubble-avatar"
+          // If it's sent by me (isSent), we might not want 'group' class even if it's a group chat. 
+          // But 'group' class mainly handles default avatar icon.
+          // Let's rely on standard Avatar behavior.
+          />
         </div>
         <div className="bubble-body">
           {/* 群聊中显示发送者名称 */}

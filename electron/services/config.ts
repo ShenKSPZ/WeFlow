@@ -19,6 +19,7 @@ interface ConfigSchema {
   themeId: string
   language: string
   logEnabled: boolean
+  llmModelPath: string
 }
 
 export class ConfigService {
@@ -40,7 +41,8 @@ export class ConfigService {
         theme: 'system',
         themeId: 'cloud-dancer',
         language: 'zh-CN',
-        logEnabled: false
+        logEnabled: false,
+        llmModelPath: ''
       }
     })
   }

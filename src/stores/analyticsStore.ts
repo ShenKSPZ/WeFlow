@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
 
 interface ChatStatistics {
   totalMessages: number
@@ -36,11 +37,11 @@ interface AnalyticsState {
   statistics: ChatStatistics | null
   rankings: ContactRanking[]
   timeDistribution: TimeDistribution | null
-  
+
   // 状态
   isLoaded: boolean
   lastLoadTime: number | null
-  
+
   // Actions
   setStatistics: (data: ChatStatistics) => void
   setRankings: (data: ContactRanking[]) => void
@@ -49,22 +50,29 @@ interface AnalyticsState {
   clearCache: () => void
 }
 
-export const useAnalyticsStore = create<AnalyticsState>((set) => ({
-  statistics: null,
-  rankings: [],
-  timeDistribution: null,
-  isLoaded: false,
-  lastLoadTime: null,
+export const useAnalyticsStore = create<AnalyticsState>()(
+  persist(
+    (set) => ({
+      statistics: null,
+      rankings: [],
+      timeDistribution: null,
+      isLoaded: false,
+      lastLoadTime: null,
 
-  setStatistics: (data) => set({ statistics: data }),
-  setRankings: (data) => set({ rankings: data }),
-  setTimeDistribution: (data) => set({ timeDistribution: data }),
-  markLoaded: () => set({ isLoaded: true, lastLoadTime: Date.now() }),
-  clearCache: () => set({ 
-    statistics: null, 
-    rankings: [], 
-    timeDistribution: null, 
-    isLoaded: false, 
-    lastLoadTime: null 
-  }),
-}))
+      setStatistics: (data) => set({ statistics: data }),
+      setRankings: (data) => set({ rankings: data }),
+      setTimeDistribution: (data) => set({ timeDistribution: data }),
+      markLoaded: () => set({ isLoaded: true, lastLoadTime: Date.now() }),
+      clearCache: () => set({
+        statistics: null,
+        rankings: [],
+        timeDistribution: null,
+        isLoaded: false,
+        lastLoadTime: null
+      }),
+    }),
+    {
+      name: 'analytics-storage',
+    }
+  )
+)
